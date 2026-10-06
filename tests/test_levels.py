@@ -158,7 +158,7 @@ def test_zero_dte_slots(tmp_path, when, posted, expected):
 def test_record_post_keeps_today_only(tmp_path):
     marker = tmp_path / "levels_posted.txt"
     marker.write_text("2026-10-05 daily\n2026-10-06 daily\n")
-    levels_cli.record_post(marker, pd.Timestamp("2026-10-06").date(), levels_cli.ZERO_DTE_SLOTS[0])
+    levels_cli.record_post(marker, pd.Timestamp("2026-10-06").date(), levels_cli.ZERO_DTE_SLOTS[0].name)
     assert marker.read_text() == "2026-10-06 0dte-09:45\n2026-10-06 daily\n"
 
 
@@ -190,11 +190,26 @@ def fake_post(monkeypatch, tmp_path):
     return sent, tmp_path / "levels_posted.txt"
 
 
-def test_manual_post_does_not_block_scheduled_ones(fake_post):
+def test_manual_entry_names_the_kind_and_new_york_time():
+    now = pd.Timestamp("2026-10-06 19:20", tz="UTC")
+    assert levels_cli.manual_entry(now, zero_dte=True) == "manual-0dte-15:20"
+    assert levels_cli.manual_entry(now, zero_dte=False) == "manual-daily-15:20"
+
+
+def test_manual_post_is_recorded(fake_post):
     sent, marker = fake_post
-    assert levels_cli.main(["--markets", "NQ", "ES", "--post"]) == 0
+    assert levels_cli.main(["--markets", "NQ", "ES", "--zero-dte", "--post"]) == 0
     assert sent["url"] == "https://discord.example/webhook" and len(sent["payload"]["embeds"]) == 2
-    assert not marker.exists()
+    assert "manual-0dte-" in marker.read_text()
+
+
+def test_manual_entries_do_not_block_scheduled_slots(tmp_path):
+    marker = tmp_path / "levels_posted.txt"
+    marker.write_text("2026-10-06 manual-0dte-13:35\n2026-10-06 manual-daily-09:00\n")
+    slot, _ = levels_cli.due_slot(pd.Timestamp("2026-10-06 17:40", tz="UTC"), levels_cli.ZERO_DTE_SLOTS, marker)
+    assert slot.name == "0dte-13:30"
+    slot, _ = levels_cli.due_slot(pd.Timestamp("2026-10-06 13:15", tz="UTC"), (levels_cli.DAILY_SLOT,), marker)
+    assert slot.name == "daily"
 
 
 def test_scheduled_zero_dte_post_records_its_slot(fake_post, monkeypatch):

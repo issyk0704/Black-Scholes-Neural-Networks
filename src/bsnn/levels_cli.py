@@ -64,11 +64,18 @@ def posted_today(marker: Path, day: dt.date) -> set[str]:
     return {parts[1] for parts in lines if len(parts) == 2 and parts[0] == f"{day:%Y-%m-%d}"}
 
 
-def record_post(marker: Path, day: dt.date, slot: Slot) -> None:
-    """Remember that ``slot`` has posted today (older days are dropped)."""
-    done = posted_today(marker, day) | {slot.name}
+def record_post(marker: Path, day: dt.date, name: str) -> None:
+    """Remember a post made today: a slot name, or a manual entry (older days are dropped)."""
+    done = posted_today(marker, day) | {name}
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("".join(f"{day:%Y-%m-%d} {name}\n" for name in sorted(done)))
+
+
+def manual_entry(now: pd.Timestamp, zero_dte: bool) -> str:
+    """The record for a manual post, e.g. "manual-0dte-15:20". It never matches a slot name,
+    so manual posts don't block the scheduled ones."""
+    ny = now.tz_convert(market_data.MARKET_TZ)
+    return f"manual-{'0dte' if zero_dte else 'daily'}-{ny:%H:%M}"
 
 
 def due_slot(now: pd.Timestamp, slots: tuple[Slot, ...], marker: Path) -> tuple[Slot | None, str]:
@@ -266,8 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Set DISCORD_WEBHOOK_URL to the channel's webhook URL to post.", file=sys.stderr)
         return 1
     post(webhook, payload)
-    if slot is not None:
-        record_post(marker, today, slot)  # manual posts don't block the scheduled ones
+    record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
     print(f"Posted {'0DTE ' if args.zero_dte else ''}levels for {', '.join(lv.symbol for lv in all_levels)}.")
     return 0
 
