@@ -86,7 +86,14 @@ Get-Content .\data\collect.log -Tail 20                               # check wh
 Unregister-ScheduledTask -TaskName "BSNN daily option snapshots"      # remove it again
 ```
 
-The task runs while you're logged on (a locked screen is fine), on battery or mains, and the app
+**Collecting without the laptop.** The same collector can run on GitHub's servers each weekday
+using GitHub Actions' free tier, in a separate private repository: Yahoo's terms don't allow
+republishing its data, so it shouldn't go in this public one. Clone that repository to
+`data\options\cloud` and the app picks its snapshots up automatically; a snapshot collected both
+there and on the laptop is counted once. Fetch the latest with
+`git -C .\data\options\cloud pull`.
+
+The laptop task runs while you're logged on (a locked screen is fine), on battery or mains, and the app
 doesn't need to be open. It doesn't wake a sleeping laptop: if the laptop is asleep at 19:30, the
 task runs when it wakes, and saves only if the US market is still open (before about 20:55 UK). Collected snapshots are gzipped (about 2 MB a day) and kept out of git; only the
 bundled seed snapshots (plain `.csv`) are committed.

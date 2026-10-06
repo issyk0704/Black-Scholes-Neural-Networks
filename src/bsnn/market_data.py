@@ -343,8 +343,18 @@ def live_quote_share(chain: pd.DataFrame) -> float:
 
 
 def list_option_snapshots(directory: Path | None = None) -> list[Path]:
-    """Saved snapshots (bundled .csv and collected .csv.gz), sorted by ticker then date."""
-    return sorted(Path(directory or paths.OPTIONS_DIR).glob("*_options_*.csv*"))
+    """Saved snapshots, sorted by ticker then date.
+
+    Includes sub-folders, such as the cloud-collected repository cloned to
+    ``data/options/cloud``. A snapshot saved twice (by the laptop and the cloud
+    job on the same day) is listed once, preferring the copy nearest the top.
+    """
+    found = sorted(Path(directory or paths.OPTIONS_DIR).rglob("*_options_*.csv*"),
+                   key=lambda p: (len(p.parts), str(p)))
+    unique: dict[str, Path] = {}
+    for path in found:
+        unique.setdefault(snapshot_label(path), path)
+    return sorted(unique.values(), key=lambda p: p.name)
 
 
 def load_option_snapshots(files: Iterable[Path]) -> pd.DataFrame:

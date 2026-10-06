@@ -12,6 +12,8 @@ models/
 # Collected data stays local: ~2 MB a day compressed. The bundled seed snapshots are plain .csv.
 data/options/*.csv.gz
 data/collect.log
+# The private bsnn-data repository (cloud-collected snapshots) is cloned here.
+data/options/cloud/
 # Price history is a download cache; only the original four seed files are tracked.
 data/stock/*
 

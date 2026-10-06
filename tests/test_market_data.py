@@ -111,6 +111,14 @@ def test_fetch_does_not_save_chains_with_blank_quotes(tmp_path, chain):
     assert md.list_option_snapshots(tmp_path) == []
 
 
+def test_snapshots_in_subfolders_are_found_once(tmp_path, chain):
+    local = md.save_option_snapshot(chain, tmp_path)
+    cloud = tmp_path / "cloud" / "data" / "options"
+    md.save_option_snapshot(chain, cloud)  # same snapshot, collected again in the cloud
+    only_cloud = md.save_option_snapshot(chain.assign(ticker="CLD"), cloud)
+    assert md.list_option_snapshots(tmp_path) == [only_cloud, local]
+
+
 def test_live_quote_share(chain):
     assert md.live_quote_share(chain) == 1.0
     assert md.live_quote_share(chain.assign(bid=0.0)) == 0.0
