@@ -86,8 +86,9 @@ Get-Content .\data\collect.log -Tail 20                               # check wh
 Unregister-ScheduledTask -TaskName "BSNN daily option snapshots"      # remove it again
 ```
 
-The task only runs while you're logged on. If the laptop is asleep at 19:30, it runs when the
-laptop wakes. Collected snapshots are gzipped (about 2 MB a day) and kept out of git; only the
+The task runs while you're logged on (a locked screen is fine), on battery or mains, and the app
+doesn't need to be open. It doesn't wake a sleeping laptop: if the laptop is asleep at 19:30, the
+task runs when it wakes, and saves only if the US market is still open (before about 20:55 UK). Collected snapshots are gzipped (about 2 MB a day) and kept out of git; only the
 bundled seed snapshots (plain `.csv`) are committed.
 
 <p>
