@@ -87,8 +87,18 @@ $env:DISCORD_WEBHOOK_URL = "<your webhook URL>"        # the channel's webhook (
 .\.venv\Scripts\bsnn-levels.exe --post --source index  # use NDX/SPX options instead of QQQ/SPY
 ```
 
-In the cloud, a workflow in the private data repository posts the levels each weekday at about
-09:15 New York time, reading the webhook URL from a GitHub Actions secret.
+`bsnn-levels --zero-dte` reads live chains instead and posts **0DTE** levels: gamma from today's
+expiry only (or the nearest one, for markets with no expiry today), the implied move to the close,
+and the busiest strikes by volume. These levels move with price and time left, but they rest on
+the morning's open interest: positions opened today, and whether volume was buying or selling,
+can't be seen in free data.
+
+In the cloud, workflows in the private data repository post each weekday (New York time):
+the previous session's levels at **09:15**, and 0DTE updates at **09:45, 10:45, 13:30 and
+14:45**. They read the webhook URL from a GitHub Actions secret.
+
+The **Moves & gamma** tab has the same 0DTE view ("Gamma from: 0DTE"), a volume-by-strike chart,
+and a 15-minute auto-refresh during US hours.
 
 ### Daily data collection
 
