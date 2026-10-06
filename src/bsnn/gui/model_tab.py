@@ -16,9 +16,12 @@ from bsnn import market_data, paths
 from bsnn.features import build_dataset
 from bsnn.gui.common import (ACCENT_COLOUR, CALL_COLOUR, NN_COLOUR, PUT_COLOUR, AppState, PlotCanvas, fill_table,
                              run_in_background, spin, status_label)
-from bsnn.model import BS_ATM, BS_HIST, MODEL_KINDS, NN, SPLITS, OptionPricer, TrainConfig, TrainingResult, train
+from bsnn.instruments import ASSET_CLASSES, asset_class_of
+from bsnn.model import (BS_ATM, BS_HIST, MODEL_KINDS, NN, SPLITS, OptionPricer, TrainConfig, TrainingResult,
+                        metrics_by_class, train)
 
-CHARTS = ["Predicted vs market price", "Error by moneyness", "Error by days to expiry", "Training loss"]
+CHARTS = ["Predicted vs market price", "Error by asset class", "Error by moneyness", "Error by days to expiry",
+          "Training loss"]
 MODEL_COLOURS = {NN: NN_COLOUR, BS_HIST: ACCENT_COLOUR, BS_ATM: CALL_COLOUR}
 
 
@@ -40,8 +43,14 @@ class ModelTab(QWidget):
         # Data
         self.snapshots = QListWidget()
         self.snapshots.setMinimumHeight(140)
+        self.class_filter = QComboBox()
+        self.class_filter.addItem("Tick all asset classes", None)
+        for asset_class in ASSET_CLASSES:
+            self.class_filter.addItem(f"Tick only {asset_class.lower()}", asset_class)
+        self.class_filter.activated.connect(self.tick_asset_class)
         data_box = QGroupBox("Option snapshots to learn from")
         data_layout = QVBoxLayout(data_box)
+        data_layout.addWidget(self.class_filter)
         data_layout.addWidget(self.snapshots)
         data_hint = status_label()
         data_hint.setText("Fetch more in the Option chain tab; each fetch is saved here.")
@@ -70,8 +79,13 @@ class ModelTab(QWidget):
         self.seed.setValue(defaults.seed)
         settings = QGroupBox("Model")
         form = QFormLayout(settings)
+        self.use_asset_class = QCheckBox("Tell the network each contract's asset class")
+        self.use_asset_class.setChecked(defaults.use_asset_class)
+        self.use_asset_class.setToolTip("Equity, metals and bond smiles have different shapes; with this ticked,\n"
+                                        "one model can learn all of them.")
         form.addRow("Model type", self.kind)
         form.addRow("Volatility input", self.reference)
+        form.addRow("", self.use_asset_class)
         form.addRow("Test set", self.split)
         form.addRow("Max epochs", self.epochs)
         form.addRow("Hidden layers", self.layers)
@@ -161,11 +175,19 @@ class ModelTab(QWidget):
                      if self.snapshots.item(i).checkState() == Qt.CheckState.Unchecked}
         self.snapshots.clear()
         for path in market_data.list_option_snapshots():
-            item = QListWidgetItem(path.stem.replace("_options_", "  "))
+            item = QListWidgetItem(market_data.snapshot_label(path))
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked if path in unchecked else Qt.CheckState.Checked)
             self.snapshots.addItem(item)
+
+    def tick_asset_class(self, index: int):
+        wanted = self.class_filter.itemData(index)
+        for i in range(self.snapshots.count()):
+            item = self.snapshots.item(i)
+            ticker = item.data(Qt.ItemDataRole.UserRole).name.split("_options_")[0]
+            keep = wanted is None or asset_class_of(ticker) == wanted
+            item.setCheckState(Qt.CheckState.Checked if keep else Qt.CheckState.Unchecked)
 
     def selected_files(self) -> list[Path]:
         return [self.snapshots.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.snapshots.count())
@@ -185,7 +207,7 @@ class ModelTab(QWidget):
         return TrainConfig(kind=self.kind.currentData(), use_atm_iv=self.reference.currentData(),
                            hidden_layers=layers, epochs=self.epochs.value(),
                            learning_rate=self.learning_rate.value(), split=self.split.currentData(),
-                           seed=self.seed.value())
+                           seed=self.seed.value(), use_asset_class=self.use_asset_class.isChecked())
 
     def start_training(self):
         try:
@@ -303,6 +325,15 @@ class ModelTab(QWidget):
             ax.set_ylim(0, top * 1.2)
             ax.set_xlabel("Market mid price")
             ax.set_ylabel("Model price")
+        elif chart == "Error by asset class":
+            # Percentage error, because dollar errors on a $5 ETF and a $700 one aren't comparable.
+            by_class = metrics_by_class(df)["Median abs error (%)"].unstack("Model")
+            x = np.arange(len(by_class))
+            for offset, name in zip((-0.27, 0.0, 0.27), (BS_HIST, BS_ATM, NN)):
+                ax.bar(x + offset, by_class[name], width=0.27, color=MODEL_COLOURS[name], label=name)
+            counts = df.groupby("asset_class").size()
+            ax.set_xticks(x, [f"{c}\n({counts[c]:,} contracts)" for c in by_class.index])
+            ax.set_ylabel("Median absolute error (%)")
         else:
             if chart == "Error by moneyness":
                 bucket = pd.cut(df["S"] / df["K"], np.arange(0.7, 1.31, 0.05))

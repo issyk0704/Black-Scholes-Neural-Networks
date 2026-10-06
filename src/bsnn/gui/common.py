@@ -12,7 +12,7 @@ from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QLabel, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
-from bsnn.market_data import DEFAULT_TICKERS
+from bsnn.instruments import INSTRUMENTS, label
 
 log = logging.getLogger(__name__)
 
@@ -140,17 +140,19 @@ class PlotCanvas(QWidget):
 
 # --- Inputs and tables -------------------------------------------------------
 
-def ticker_box() -> QComboBox:
+def ticker_box(include_yields: bool = True) -> QComboBox:
+    """The watchlist markets, plus any symbol Yahoo Finance knows typed in by hand."""
     box = QComboBox()
     box.setEditable(True)
-    box.addItems(DEFAULT_TICKERS)
+    box.addItems([label(i) for i in INSTRUMENTS if include_yields or not i.is_yield])
     box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-    box.setToolTip("Pick a ticker or type any symbol Yahoo Finance knows")
+    box.setToolTip("Pick a watchlist market, or type any Yahoo Finance symbol (e.g. AAPL)")
     return box
 
 
 def ticker_of(box: QComboBox) -> str:
-    return box.currentText().strip().upper()
+    """The symbol in the box: 'NQ' for 'NQ — Nasdaq-100 E-mini', or whatever was typed."""
+    return box.currentText().split("—")[0].strip().upper()
 
 
 def spin(value: float, minimum: float, maximum: float, decimals: int = 2, suffix: str = "",

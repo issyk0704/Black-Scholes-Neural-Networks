@@ -3,8 +3,11 @@ import pytest
 
 pytest.importorskip("pytestqt")
 
+from bsnn import pricing  # noqa: E402
 from bsnn.gui import model_tab  # noqa: E402
 from bsnn.gui.app import MainWindow  # noqa: E402
+from bsnn.gui.common import ticker_of  # noqa: E402
+from bsnn.gui.market_tab import MarketData  # noqa: E402
 
 from conftest import make_chain  # noqa: E402
 
@@ -33,7 +36,7 @@ def cell(table, row_label, column=0):
 
 
 def set_contract(tab, S=100, K=100, days=365, r=5, q=0, vol=20):
-    for box, value in ((tab.spot, S), (tab.strike, K), (tab.days, days), (tab.rate, r), (tab.dividend, q),
+    for box, value in ((tab.spot, S), (tab.strike, K), (tab.days, days), (tab.rate, r), (tab.carry, q),
                        (tab.vol, vol)):
         box.setValue(value)
 
@@ -76,12 +79,54 @@ def test_chain_tab_lists_contracts_and_model_prices(window):
     assert {tab.table.item(r, 1).text() for r in range(tab.table.rowCount())} == {"Put"}
 
 
-def test_market_tab_summarises_history(window, history):
+def test_pricer_switches_to_black76_for_futures(window):
+    tab = window.pricer_tab
+    set_contract(tab, S=31_000, K=31_000, days=30, r=4, q=1, vol=20)
+    tab.model.setCurrentIndex(tab.model.findData("black76"))
+    assert tab.form.labelForField(tab.spot).text() == "Futures price (F)"
+    assert not tab.carry.isEnabled()
+    expected = pricing.model_greeks("black76", 31_000, 31_000, 30 / 365, 0.04, 0.2, is_call=True)["price"]
+    assert cell(tab.table, "Price", 0) == f"{expected:.4f}"
+
+
+def test_pricer_loads_fx_with_garman_kohlhagen(window):
+    tab = window.pricer_tab
+    tab.on_loaded({"symbol": "EU", "ticker": "EURUSD=X", "model": "garman_kohlhagen", "spot": 1.12413,
+                   "asof": pd.Timestamp("2026-10-05"), "hist_vol": 0.07, "rate": 0.04, "carry": 0.026,
+                   "asset_class": "FX", "note": ""})
+    assert tab.current_model() == "garman_kohlhagen"
+    assert tab.spot.decimals() == 5 and tab.spot.value() == pytest.approx(1.12413)
+    assert tab.form.labelForField(tab.carry).text() == "Foreign rate (r_f)"
+    assert tab.iv_result.text() == "7.00%"  # the solver starts from this contract's own price
+
+
+def test_market_tab_summarises_prices(window, history):
     tab = window.market_tab
-    tab.on_loaded(("TEST", "1y"), history)
-    assert tab.stats["Last close"].text() == f"{history['Close'].iloc[-1]:,.2f}"
+    tab.on_loaded(MarketData("TEST", "TEST", "1y", history))
+    assert tab.stats["Last"].text() == f"{history['Close'].iloc[-1]:,.5g}"
     for i in range(tab.chart.count()):
         tab.chart.setCurrentIndex(i)
+
+
+def test_market_tab_measures_yields_in_basis_points(window, history):
+    yields = history.assign(Close=4.0 + history["Close"] / 1000)
+    tab = window.market_tab
+    tab.on_loaded(MarketData("US10Y", "^TNX", "1y", yields, is_yield=True, vol_index="^MOVE",
+                             vol_index_history=history.assign(Close=110.0)))
+    assert tab.stats["1-day change"].text().endswith(" bp")
+    assert tab.stats["30d realised vol"].text().endswith(" bp")
+    assert tab.stats["Implied vol index"].text() == "110.0 (MOVE)"
+    for i in range(tab.chart.count()):
+        tab.chart.setCurrentIndex(i)
+
+
+def test_ticker_box_reads_watchlist_labels(window):
+    box = window.market_tab.ticker
+    box.setCurrentText("NQ — Nasdaq-100 E-mini")
+    assert ticker_of(box) == "NQ"
+    box.setCurrentText(" aapl ")
+    assert ticker_of(box) == "AAPL"
+    assert all("US10Y" not in window.pricer_tab.ticker.itemText(i) for i in range(window.pricer_tab.ticker.count()))
 
 
 def test_model_tab_trains_in_background(window, qtbot, tmp_path, monkeypatch):

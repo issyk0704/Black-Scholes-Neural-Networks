@@ -3,7 +3,7 @@
     python scripts/screenshots.py
 
 Trains a fresh default model on all saved snapshots and fetches live prices for
-SPY, so it needs a network connection and takes about a minute.
+NQ, so it needs a network connection and takes about a minute.
 """
 
 import sys
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QApplication
 
 from bsnn import market_data
 from bsnn.gui.app import MainWindow
+from bsnn.gui.market_tab import load_market
 from bsnn.gui.model_tab import train_from_files
 from bsnn.gui.pricer_tab import load_market_inputs
 from bsnn.model import TrainConfig
@@ -38,12 +39,14 @@ def main():
     window.model_tab.on_trained(result)
 
     pricer = window.pricer_tab
-    pricer.ticker.setCurrentText("SPY")
-    pricer.on_loaded(load_market_inputs("SPY"))
+    pricer.ticker.setCurrentText("NQ — Nasdaq-100 E-mini")
+    pricer.on_loaded(load_market_inputs("NQ"))
     pricer.days.setValue(45)
 
-    window.market_tab.ticker.setCurrentText("SPY")
-    window.market_tab.on_loaded(("SPY", "2y"), market_data.get_history("SPY"))
+    market = window.market_tab
+    market.ticker.setCurrentText("NQ — Nasdaq-100 E-mini")
+    market.chart.setCurrentIndex(1)  # realised vol against VXN
+    market.on_loaded(load_market("NQ", "2y"))
 
     chain = window.chain_tab
     latest_spy = [f for f in files if f.name.startswith("SPY")][-1]

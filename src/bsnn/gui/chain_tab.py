@@ -11,7 +11,7 @@ from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSplitter, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
-from bsnn import market_data, pricing
+from bsnn import instruments, market_data, pricing
 from bsnn.features import ATM_IV_FEATURE, Filters, build_dataset
 from bsnn.gui.common import (ACCENT_COLOUR, CALL_COLOUR, NN_COLOUR, PUT_COLOUR, AppState, PlotCanvas, fill_table,
                              run_in_background, status_label, ticker_box, ticker_of)
@@ -35,6 +35,7 @@ class ChainTab(QWidget):
         self.state = state
         self.chain: pd.DataFrame | None = None
         self.source = ""
+        self._source = ""  # description of the fetch in progress
         self._spot_row = 0
 
         self.ticker = ticker_box()
@@ -89,7 +90,7 @@ class ChainTab(QWidget):
         self.saved.clear()
         self.saved.addItem("Saved snapshot…", None)
         for path in reversed(market_data.list_option_snapshots()):
-            self.saved.addItem(path.stem.replace("_options_", "  "), path)
+            self.saved.addItem(market_data.snapshot_label(path), path)
 
     def showEvent(self, event):
         self.refresh_saved()
@@ -97,9 +98,16 @@ class ChainTab(QWidget):
         self.scroll_to_spot()
 
     def fetch(self):
-        ticker = ticker_of(self.ticker)
-        if not ticker:
+        symbol = ticker_of(self.ticker)
+        if not symbol:
             return
+        inst = instruments.resolve(symbol)
+        ticker = inst.options_proxy if inst else symbol
+        self._source = "live, saved to data/options"
+        if inst:
+            self._source = f"options proxy for {symbol}, live, saved to data/options"
+            if inst.proxy_is_thin:
+                self._source += "; few strikes and expiries, so treat with caution"
         self.fetch_button.setEnabled(False)
         self.status.setText(f"Fetching the {ticker} option chain…")
         run_in_background(self, market_data.fetch_option_chain, ticker, on_done=self.on_fetched,
@@ -108,7 +116,9 @@ class ChainTab(QWidget):
     def on_fetched(self, raw: pd.DataFrame):
         self.fetch_button.setEnabled(True)
         self.refresh_saved()
-        self.set_chain(raw, "live, saved to data/options")
+        if market_data.live_quote_share(raw) < 0.5:
+            self._source += ". Most quotes are blank: Yahoo clears them outside US hours (14:30-21:00 UK)"
+        self.set_chain(raw, self._source)
 
     def on_failed(self, message: str):
         self.fetch_button.setEnabled(True)
@@ -129,6 +139,12 @@ class ChainTab(QWidget):
         self.chain = build_dataset(raw, DISPLAY_FILTERS)
         self.source = source
         first = raw.iloc[0]
+        if self.chain.empty:
+            self.table.setRowCount(0)
+            self.expiry.clear()
+            self.plot.message("No contracts with a usable two-sided quote")
+            self.status.setText(f"{first['ticker']} ({source}): no contracts with a usable quote.")
+            return
         when = market_data.market_date(first["snapshotTime"])
         self.status.setText(
             f"{first['ticker']} ({source}) on {when:%d %b %Y}: spot {first['underlyingPrice']:,.2f}, "

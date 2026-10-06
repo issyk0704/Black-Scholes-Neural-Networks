@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/issyk0704/Black-Scholes-Neural-Networks/actions/workflows/ci.yml/badge.svg)](https://github.com/issyk0704/Black-Scholes-Neural-Networks/actions/workflows/ci.yml)
 
-A desktop app and Python package for pricing equity options with the Black-Scholes model and
-with neural networks trained on real option chains. It tests whether a network can price
-options more accurately than Black-Scholes.
+A desktop app and Python package for pricing options on index futures, FX, metals, Treasuries
+and stocks, using Black-Scholes-family models and neural networks trained on real option chains.
+It tests whether a network can price options more accurately than Black-Scholes.
 
-Originally my final-year project; rebuilt in 2026 with corrected models, current data and a new interface.
+Originally my final-year project; rebuilt in 2026 with corrected models, current data, futures and
+FX markets, and a new interface.
 
 ![Option chain tab](docs/screenshots/chain.png)
 
@@ -14,10 +15,51 @@ Originally my final-year project; rebuilt in 2026 with corrected models, current
 
 | Tab | |
 |---|---|
-| **Pricer** | Black-Scholes-Merton price and all five Greeks for any contract, updating as you type. Loads spot, the 13-week T-bill rate, trailing dividend yield and 30-day historical volatility for any ticker. Includes an implied-volatility solver and charts of price and Greeks against spot or volatility. |
-| **Market** | Price history with 50/200-day moving averages, 30/60-day realised volatility and the distribution of daily returns. |
-| **Option chain** | Fetches every listed expiry from Yahoo Finance. Each contract is shown with its bid/ask, implied vol, the Black-Scholes price and the neural-network price, and network prices that land inside the bid-ask spread are highlighted. The chart shows the market's volatility smile against the network's. Every fetch is saved as a dated snapshot, so the training set grows over time. |
-| **Neural network** | Trains on any set of saved snapshots, reports test-set accuracy against two Black-Scholes benchmarks, plots errors by moneyness and expiry, and saves or loads models. |
+| **Pricer** | Price and all five Greeks for any contract, updating as you type, under Black-Scholes-Merton (stocks, ETFs), Black-76 (futures) or Garman-Kohlhagen (FX). Loading a market fills in the price, the 13-week T-bill rate, the carry (dividend yield, or the foreign rate implied from FX futures) and 30-day historical volatility, and picks the right model. Includes an implied-volatility solver and charts of price and Greeks against spot or volatility. |
+| **Market** | Price or yield history with 50/200-day moving averages, 30/60-day realised volatility against the matching implied-vol index (VXN, VIX, VXD, GVZ, MOVE), and the distribution of daily moves. Yields are measured in basis points. |
+| **Option chain** | Fetches every listed expiry from Yahoo Finance (an ETF proxy for futures and FX markets). Each contract is shown with its bid/ask, implied vol, the Black-Scholes price and the neural-network price, and network prices that land inside the bid-ask spread are highlighted. The chart shows the market's volatility smile against the network's. Every fetch is saved as a dated snapshot, so the training set grows over time. |
+| **Neural network** | Trains on any set of saved snapshots, reports test-set accuracy against two Black-Scholes benchmarks, plots errors by asset class, moneyness and expiry, and saves or loads models. |
+
+## Markets
+
+The watchlist is defined in [`src/bsnn/instruments.py`](src/bsnn/instruments.py). Adding a market means adding one line there.
+
+Yahoo Finance has prices for futures, FX and yields but **no option chains** for them. For training
+data, each market uses the options of a listed ETF that tracks it (its "options proxy"). For index
+futures the proxy's smile is almost the same as the real one (SPY and ES track the same index). For
+bonds it is only indicative, because TLT and ZB have different durations.
+
+| Market | Price data | Pricing model | Options proxy |
+|---|---|---|---|
+| NQ, ES, YM, RTY | NQ=F, ES=F, YM=F, RTY=F | Black-76 | QQQ, SPY, DIA, IWM |
+| GC / XAUUSD, SI / XAGUSD | GC=F, SI=F (Yahoo has no spot metals feed) | Black-76 | GLD, SLV |
+| ZB, ZT, ZN | ZB=F, ZT=F, ZN=F | Black-76 | TLT, SHY*, IEF |
+| US02Y, US10Y, US30Y | FRED DGS2, ^TNX, ^TYX | (yields, not option underlyings) | SHY*, IEF, TLT |
+| DXY | DX-Y.NYB (index, no DX futures) | Black-76 | UUP* |
+| EU, GU | EURUSD=X, GBPUSD=X; foreign rate from 6E=F, 6B=F | Garman-Kohlhagen | FXE*, FXB* |
+
+\* Thin proxies, with only a few expiries and strikes. Their results should be treated with caution.
+
+US02Y comes from the Federal Reserve's FRED database instead of Yahoo. Yahoo's only 2-year
+series (2YY=F) barely trades and shows stale prints that look like 30 bp daily moves. FRED's
+figure is official but published one business day late.
+
+### Daily data collection
+
+Option quotes on Yahoo are only live during US trading hours (14:30–21:00 UK). `bsnn-collect`
+saves a snapshot of every proxy's chain. It refuses to run outside the session and skips any chain
+where fewer than half the contracts have a live quote, which catches holidays and stale data.
+To run it every weekday at 19:30 UK, from the repository root in PowerShell:
+
+```powershell
+.\scripts\register-daily-collection.ps1                               # create the scheduled task
+Get-Content .\data\collect.log -Tail 20                               # check what it collected
+Unregister-ScheduledTask -TaskName "BSNN daily option snapshots"      # remove it again
+```
+
+The task only runs while you're logged on. If the laptop is asleep at 19:30, it runs when the
+laptop wakes. Collected snapshots are gzipped (about 2 MB a day) and kept out of git; only the
+bundled seed snapshots (plain `.csv`) are committed.
 
 <p>
   <img src="docs/screenshots/pricer.png" width="49%" alt="Pricer tab">
@@ -122,8 +164,14 @@ Training from the command line, for repeatable experiments:
 bsnn-train                              # smile model, ATM vol, random-expiry split
 bsnn-train --split date --save          # train on older snapshots, test on the newest; keep the model
 bsnn-train --kind price --hist-vol      # the direct-price baseline
+bsnn-train --asset-class                # tell the network each contract's asset class
 bsnn-train --help
 ```
+
+With snapshots from more than one asset class, `bsnn-train` also prints the results for each class.
+The `--asset-class` option is off by default. On the equity-only data available in October 2026 it
+made results slightly worse (average error $1.87 against $1.61), but it should be re-tested once the
+collector has gathered metals and bond chains.
 
 Run the tests with `pytest`. The GUI tests need a display, or `QT_QPA_PLATFORM=offscreen`.
 
@@ -131,17 +179,19 @@ Run the tests with `pytest`. The GUI tests need a display, or `QT_QPA_PLATFORM=o
 
 ```
 src/bsnn/
-  pricing.py       Black-Scholes-Merton prices, Greeks, implied vol (vectorised NumPy)
-  market_data.py   Yahoo Finance downloads, CSV cache, rates, dividends, realised vol
+  instruments.py   the watchlist: price source, pricing model and options proxy per market
+  pricing.py       Black-Scholes-Merton, Black-76, Garman-Kohlhagen; Greeks, implied vol (vectorised NumPy)
+  market_data.py   Yahoo Finance and FRED downloads, CSV cache, rates, dividends, realised vol
   features.py      option snapshots -> modelling dataset
   model.py         smile and direct-price networks, splits, evaluation, save/load
   train_cli.py     bsnn-train
+  collect_cli.py   bsnn-collect
   gui/             PyQt6 app: one module per tab, plus shared workers and plotting
 data/
   stock/           2-year daily price history per ticker
-  options/         dated option-chain snapshots (TICKER_options_YYYY-MM-DD.csv)
+  options/         option-chain snapshots: bundled seed set (.csv) and collected (.csv.gz, not in git)
 tests/             pytest suite, including GUI tests via pytest-qt
-scripts/           screenshot generator for this README
+scripts/           daily-collection scheduler and the screenshot generator for this README
 ```
 
 ## Limitations
@@ -153,6 +203,12 @@ scripts/           screenshot generator for this README
   are fetched, and the "newest snapshot date" split is the test to trust.
 - The share price for the 2024/2025 snapshots was recovered from put-call parity, because the exact
   fetch time wasn't recorded. It agrees with that day's close to within 0.3%.
+- Futures, FX and Treasury options are learned from ETF proxies, not from the contracts themselves.
+  Training on real CME options (ES, NQ, ZN, 6E, …) needs a paid data feed such as Interactive Brokers
+  or Databento.
+- Yahoo's continuous futures prices (NQ=F etc.) aren't back-adjusted, so the jump between contracts
+  on quarterly roll days counts as a real move and briefly lifts realised volatility.
+- The DXY price is the index itself, standing in for DX futures.
 - Yahoo Finance data is unofficial and can be delayed or incomplete. This is a research and learning
   tool, not trading advice.
 
