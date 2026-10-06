@@ -4,6 +4,13 @@ Every function takes scalars or NumPy arrays (broadcast together) and returns a
 float for scalar input. ``is_call`` is True for calls and False for puts, and
 may also be an array.
 
+The two standard variants are the same formula with a different carry term
+(see :func:`carry_yield` and :func:`model_greeks`):
+
+- Black-76, for options on futures: spot is the futures price and the carry
+  equals the interest rate, because holding a futures contract costs nothing.
+- Garman-Kohlhagen, for FX options: the carry is the foreign interest rate.
+
 Greeks use trading-desk units:
 
 - delta: change in price per $1 move in spot
@@ -77,6 +84,36 @@ def greeks(S, K, T, r, sigma, q=0.0, is_call=True) -> dict:
     order = ("price", "delta", "gamma", "vega", "theta", "rho")
     return {key: _out(np.broadcast_to(out[key], np.broadcast(S, K, T, r, sigma, q, is_call).shape))
             for key in order}
+
+
+MODELS = {
+    "bsm": "Black-Scholes-Merton (stocks, ETFs)",
+    "black76": "Black-76 (futures)",
+    "garman_kohlhagen": "Garman-Kohlhagen (FX)",
+}
+
+
+def carry_yield(model: str, r, carry=0.0):
+    """The ``q`` to pass to the Black-Scholes-Merton functions for ``model``.
+
+    ``carry`` is the dividend yield for ``"bsm"`` and the foreign interest rate
+    for ``"garman_kohlhagen"``; ``"black76"`` ignores it.
+    """
+    if model == "black76":
+        return r
+    if model in ("bsm", "garman_kohlhagen"):
+        return carry
+    raise ValueError(f"Unknown model {model!r}; choose from {', '.join(MODELS)}")
+
+
+def model_greeks(model: str, S, K, T, r, sigma, carry=0.0, is_call=True) -> dict:
+    """:func:`greeks` under ``model``. For Black-76, ``S`` is the futures price."""
+    out = greeks(S, K, T, r, sigma, carry_yield(model, r, carry), is_call)
+    if model == "black76":
+        # The rate drives both discounting and carry, which cancel except for
+        # discounting the whole price: d(price)/dr = -T * price.
+        out["rho"] = _out(-np.asarray(T, dtype=float) * np.asarray(out["price"]) / 100)
+    return out
 
 
 def no_arbitrage_bounds(S, K, T, r, q=0.0, is_call=True):

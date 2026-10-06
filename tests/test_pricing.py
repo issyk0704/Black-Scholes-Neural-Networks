@@ -68,6 +68,39 @@ def test_rejects_invalid_inputs(bad):
         pricing.price(**args)
 
 
+def test_black76_textbook_value():
+    # Hull, Options Futures and Other Derivatives, Black's model example:
+    # put on futures, F=K=20, r=9%, T=4 months, sigma=25% -> 1.12
+    put = pricing.model_greeks("black76", 20, 20, 4 / 12, 0.09, 0.25, is_call=False)["price"]
+    assert put == pytest.approx(1.1166, abs=1e-4)
+
+
+def test_black76_parity_and_rho():
+    F, K, T, r = 31_000.0, 30_500.0, 0.25, 0.04
+    call = pricing.model_greeks("black76", F, K, T, r, 0.2, is_call=True)
+    put = pricing.model_greeks("black76", F, K, T, r, 0.2, is_call=False)
+    assert call["price"] - put["price"] == pytest.approx((F - K) * np.exp(-r * T))
+    h = 1e-5
+
+    def price_at(rate):
+        return pricing.model_greeks("black76", F, K, T, rate, 0.2, is_call=True)["price"]
+
+    assert call["rho"] == pytest.approx((price_at(r + h) - price_at(r - h)) / (2 * h) / 100, rel=1e-5)
+
+
+def test_garman_kohlhagen_is_bsm_with_foreign_rate():
+    S, K, T, r_dom, r_for = 1.124, 1.13, 0.5, 0.04, 0.026
+    gk = pricing.model_greeks("garman_kohlhagen", S, K, T, r_dom, 0.08, carry=r_for, is_call=True)
+    put = pricing.model_greeks("garman_kohlhagen", S, K, T, r_dom, 0.08, carry=r_for, is_call=False)
+    assert gk == pricing.greeks(S, K, T, r_dom, 0.08, r_for, True)
+    assert gk["price"] - put["price"] == pytest.approx(S * np.exp(-r_for * T) - K * np.exp(-r_dom * T))
+
+
+def test_unknown_model():
+    with pytest.raises(ValueError, match="Unknown model"):
+        pricing.carry_yield("binomial", 0.04)
+
+
 def test_payoff():
     np.testing.assert_allclose(pricing.payoff([90, 100, 110], 100, True), [0, 0, 10])
     np.testing.assert_allclose(pricing.payoff([90, 100, 110], 100, False), [10, 0, 0])
