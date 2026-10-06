@@ -297,6 +297,12 @@ def enrich_snapshot(chain: pd.DataFrame, ticker: str, snapshot_time, *, spot: fl
     )
 
 
+def latest_price(ticker: str) -> float:
+    """The most recent price Yahoo has, including futures trading outside US hours."""
+    tk = yf.Ticker(ticker)
+    return _live_price(tk, clean_history(tk.history(period="5d", auto_adjust=False)))
+
+
 def _live_price(tk, history: pd.DataFrame) -> float:
     try:
         price = float(tk.fast_info["lastPrice"])

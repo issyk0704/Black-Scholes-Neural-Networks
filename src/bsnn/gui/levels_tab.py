@@ -12,12 +12,11 @@ from PyQt6.QtWidgets import (QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHe
                              QSplitter, QTableWidget, QVBoxLayout, QWidget)
 
 from bsnn import analytics, instruments, market_data
-from bsnn.features import Filters, build_dataset
+from bsnn.features import build_dataset
 from bsnn.gui.common import (ACCENT_COLOUR, CALL_COLOUR, NN_COLOUR, PUT_COLOUR, PlotCanvas, fill_table,
                              run_in_background, status_label, ticker_box, ticker_of)
+from bsnn.levels import FILTERS, futures_ratio
 
-# Every strike with a usable quote; gamma far from spot is tiny, so a wide range costs nothing.
-FILTERS = Filters(min_days=0.05, min_moneyness=0.5, max_moneyness=2.0, max_relative_spread=1.0, min_price=0.01)
 GAMMA_WINDOWS = {"All expiries": None, "Next 30 days": 30, "Next 7 days": 7}
 CHARTS = ["Gamma exposure by strike", "Net gamma vs price (gamma flip)", "Implied move by expiry"]
 SUMMARY = ["Spot", "1-day implied move", "Net gamma (per 1%)", "Gamma flip", "Call wall", "Put wall"]
@@ -33,11 +32,6 @@ class LevelsData:
     futures: instruments.Instrument | None = None
     futures_ratio: float = np.nan  # futures price / underlying price on the snapshot day
     notes: list[str] = field(default_factory=list)
-
-
-def futures_ratio(inst: instruments.Instrument, snapshot_time, spot: float) -> float:
-    history = market_data.get_history(inst.price_ticker, refresh=True)
-    return market_data.unadjusted_close(history, snapshot_time) / spot
 
 
 def load_levels(ticker: str, path: Path | None = None, progress=None) -> LevelsData:
