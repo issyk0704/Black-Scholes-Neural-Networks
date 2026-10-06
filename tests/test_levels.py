@@ -32,7 +32,7 @@ def test_levels_for_reads_etf_options_by_default(snapshots):
     with patch.object(lv, "futures_ratio", return_value=41.5):
         levels = lv.levels_for("NQ", before="2026-10-07", directory=snapshots)
     assert levels.source == "QQQ" and levels.symbol == "NQ"
-    assert levels.snapshot_date == pd.Timestamp("2026-10-06")
+    assert levels.snapshot_time.date() == pd.Timestamp("2026-10-06").date()
     assert levels.in_futures(100.0) == pytest.approx(4150.0)
     assert np.isfinite(levels.one_day_move_pct) and levels.one_day_move_pct > 0
 
@@ -40,7 +40,7 @@ def test_levels_for_reads_etf_options_by_default(snapshots):
 def test_levels_for_can_prefer_index_options(snapshots):
     with patch.object(lv, "futures_ratio", return_value=1.3):
         levels = lv.levels_for("NQ", before="2026-10-07", directory=snapshots, prefer="index")
-    assert levels.source == "^NDX" and levels.snapshot_date == pd.Timestamp("2026-10-05")
+    assert levels.source == "^NDX" and levels.snapshot_time.date() == pd.Timestamp("2026-10-05").date()
     with pytest.raises(ValueError, match="Unknown source"):
         lv.levels_for("NQ", prefer="futures")
 
@@ -60,13 +60,20 @@ def test_ym_has_no_index_options():
     assert lv.option_sources(instruments.resolve("YM"), "index") == ["DIA"]
 
 
+def test_futures_ratio_uses_price_recorded_with_snapshot():
+    from bsnn import instruments
+    raw = make_chain(ticker="QQQ", spot=760.0).assign(futuresPrice=31_464.0)
+    with patch.object(lv.market_data, "get_history", side_effect=AssertionError("shouldn't download")):
+        assert lv.futures_ratio(instruments.resolve("NQ"), raw) == pytest.approx(31_464.0 / 760.0)
+
+
 def test_levels_for_rejects_unknown_symbol():
     with pytest.raises(ValueError):
         lv.levels_for("AAPL")
 
 
 def sample_levels(**changes):
-    base = dict(symbol="NQ", source="^NDX", snapshot_date=pd.Timestamp("2026-10-05"), spot=24_000.0, ratio=1.3,
+    base = dict(symbol="NQ", source="^NDX", snapshot_time=pd.Timestamp("2026-10-05 14:30", tz="America/New_York"), spot=24_000.0, ratio=1.3,
                 net_gamma=5.1e9, flip=23_700.0, call_wall=24_200.0, put_wall=22_300.0, one_day_move_pct=0.0102)
     return lv.MarketLevels(**(base | changes))
 
@@ -77,6 +84,7 @@ def test_message_is_webhook_ready_json():
     json.dumps(payload)  # serialisable
     nq, es = payload["embeds"]
     assert nq["color"] == levels_cli.POSITIVE and es["color"] == levels_cli.NEGATIVE
+    assert "at 14:30 New York, Mon 05 Oct (NDX 24,000.00 ≈ NQ 31,200 then)" in nq["description"]
     fields = {f["name"]: f["value"] for f in nq["fields"]}
     assert fields["Gamma flip"] == "**30,810**" and fields["Call wall"] == "**31,460**"
     assert "±1.02% ≈ ±320 pts" in fields["1-day implied move (1σ)"]

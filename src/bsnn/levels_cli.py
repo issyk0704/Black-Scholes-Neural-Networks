@@ -59,9 +59,13 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
                      f"{live_price + points:,.0f}**")
         fields.append({"name": "1-day implied move (1σ)", "value": move, "inline": False})
     source = levels.source.lstrip("^")
+    taken = levels.snapshot_time
+    where = f"{source} {levels.spot:,.2f}"
+    if np.isfinite(levels.ratio):
+        where += f" ≈ {levels.symbol} {levels.in_futures(levels.spot):,.0f}"
     return {
         "title": f"{levels.symbol} options levels",
-        "description": f"From {source} options at the {levels.snapshot_date:%a %d %b} close. "
+        "description": f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({where} then). "
                        f"Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.",
         "color": POSITIVE if positive else NEGATIVE,
         "fields": fields,
@@ -72,8 +76,10 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
     """The full webhook payload: a heading plus one card per market."""
     embeds = [market_embed(lv, live_prices.get(lv.symbol)) for lv in all_levels]
     if embeds:
-        embeds[-1]["footer"] = {"text": "Levels converted to futures at that day's futures/index ratio. Gamma assumes "
-                                        "dealers are long customers' calls and short their puts. Context, not signals."}
+        embeds[-1]["footer"] = {"text": "Call wall: most call gamma above price then; put wall: most put gamma below. "
+                                        "Converted to futures at the futures/ETF price ratio when the options were "
+                                        "read. Gamma assumes dealers are long customers' calls and short their puts. "
+                                        "Context, not signals."}
     return {"username": "Options levels", "content": f"**Options levels for {today:%A %d %B %Y}**",
             "embeds": embeds}
 
