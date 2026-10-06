@@ -164,6 +164,42 @@ def test_levels_tab_shows_moves_and_gamma(window, tmp_path):
     assert tab.summary["Net gamma (per 1%)"][0].text() == "–"
 
 
+def test_levels_tab_zero_dte_and_volume(window, tmp_path):
+    path = tmp_path / "TEST_options_2026-01-05.csv"
+    make_chain(expiries=("2026-01-05", "2026-01-16", "2026-02-20")).to_csv(path, index=False)
+    tab = window.levels_tab
+    tab.on_loaded(load_levels(None, path))
+    tab.gamma_window.setCurrentText("0DTE (today's expiry)")
+    assert set(tab.gamma_df["expiry"]) == {"2026-01-05"}
+    assert tab.summary["Net gamma (per 1%)"][0].text() != "–"
+    tab.chart.setCurrentText("Volume by strike (today)")
+    assert "0DTE" in tab.plot.figure.axes[0].get_title()
+
+
+def test_levels_tab_zero_dte_falls_back_to_nearest_expiry(window, tmp_path):
+    path = tmp_path / "TEST_options_2026-01-05.csv"
+    make_chain(expiries=("2026-01-09", "2026-01-16")).to_csv(path, index=False)
+    tab = window.levels_tab
+    tab.on_loaded(load_levels(None, path))
+    tab.gamma_window.setCurrentText("0DTE (today's expiry)")
+    assert set(tab.gamma_df["expiry"]) == {"2026-01-09"}
+    assert "no expiry today, using 2026-01-09" in tab.summary["Net gamma (per 1%)"][1].text()
+
+
+def test_auto_refresh_waits_for_us_hours(window, monkeypatch):
+    tab = window.levels_tab
+    fetched = []
+    monkeypatch.setattr(tab, "fetch", lambda: fetched.append(True))
+    monkeypatch.setattr("bsnn.gui.levels_tab.market_data.us_session_open", lambda: False)
+    tab.auto_refresh.setChecked(True)
+    assert tab.refresh_timer.isActive() and not fetched and "waiting" in tab.status.text()
+    monkeypatch.setattr("bsnn.gui.levels_tab.market_data.us_session_open", lambda: True)
+    tab.auto_fetch()
+    assert fetched == [True]
+    tab.auto_refresh.setChecked(False)
+    assert not tab.refresh_timer.isActive()
+
+
 def test_levels_tab_explains_missing_open_interest(window, tmp_path):
     path = tmp_path / "TEST_options_2026-01-05.csv"
     make_chain().assign(openInterest=0.0).to_csv(path, index=False)

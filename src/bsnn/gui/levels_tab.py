@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                             QSplitter, QTableWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+                             QPushButton, QSplitter, QTableWidget, QVBoxLayout, QWidget)
 
 from bsnn import analytics, instruments, market_data
 from bsnn.features import build_dataset
@@ -17,9 +17,12 @@ from bsnn.gui.common import (ACCENT_COLOUR, CALL_COLOUR, NN_COLOUR, PUT_COLOUR, 
                              run_in_background, status_label, ticker_box, ticker_of)
 from bsnn.levels import FILTERS, futures_ratio
 
-GAMMA_WINDOWS = {"All expiries": None, "Next 30 days": 30, "Next 7 days": 7}
-CHARTS = ["Gamma exposure by strike", "Net gamma vs price (gamma flip)", "Implied move by expiry"]
+ZERO_DTE = "0dte"
+GAMMA_WINDOWS = {"All expiries": None, "Next 30 days": 30, "Next 7 days": 7, "0DTE (today's expiry)": ZERO_DTE}
+CHARTS = ["Gamma exposure by strike", "Net gamma vs price (gamma flip)", "Volume by strike (today)",
+          "Implied move by expiry"]
 SUMMARY = ["Spot", "1-day implied move", "Net gamma (per 1%)", "Gamma flip", "Call wall", "Put wall"]
+AUTO_REFRESH_MINUTES = 15
 
 
 @dataclass
@@ -75,6 +78,7 @@ class LevelsTab(QWidget):
         super().__init__()
         self.data: LevelsData | None = None
         self.levels: dict | None = None
+        self.gamma_df = pd.DataFrame()  # the contracts the gamma figures came from
 
         self.ticker = ticker_box(include_yields=False)
         self.ticker.setCurrentText("NQ — Nasdaq-100 E-mini")
@@ -90,6 +94,13 @@ class LevelsTab(QWidget):
         self.gamma_window.addItems(GAMMA_WINDOWS)
         self.gamma_window.setToolTip("Which expiries count towards gamma. Short-dated options carry most of it.")
         self.gamma_window.currentIndexChanged.connect(self.recompute_gamma)
+        self.auto_refresh = QCheckBox(f"Refresh every {AUTO_REFRESH_MINUTES} min")
+        self.auto_refresh.setToolTip("Refetch the live chain every 15 minutes during US trading hours, "
+                                     "so the levels follow price and time left")
+        self.auto_refresh.toggled.connect(self.set_auto_refresh)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(AUTO_REFRESH_MINUTES * 60 * 1000)
+        self.refresh_timer.timeout.connect(self.auto_fetch)
         self.status = status_label()
         self.status.setText("Pick a market and fetch its chain during US hours (14:30-21:00 UK), "
                             "or open a saved snapshot.")
@@ -104,6 +115,7 @@ class LevelsTab(QWidget):
         top.addSpacing(16)
         top.addWidget(QLabel("Gamma from"))
         top.addWidget(self.gamma_window)
+        top.addWidget(self.auto_refresh)
 
         self.summary = {name: (QLabel("–"), QLabel("")) for name in SUMMARY}
         summary_box = QGroupBox("Levels")
@@ -138,7 +150,9 @@ class LevelsTab(QWidget):
             "Implied move: the size (not direction) of move the options market is pricing. The straddle is "
             "roughly the expected move; the 1σ range holds about 68% of the time. Gamma assumes dealers are long "
             "customers' calls and short their puts: positive net gamma tends to damp moves, negative gamma "
-            "amplifies them. Futures levels are converted at the futures/underlying price ratio.")
+            "amplifies them. 0DTE levels use this morning's open interest with live prices, so they can't see "
+            "positions opened today; volume shows where today's activity is, not its direction. Futures levels "
+            "are converted at the futures/underlying price ratio.")
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -181,6 +195,21 @@ class LevelsTab(QWidget):
         self.status.setText(f"Fetching the {ticker} option chain…")
         run_in_background(self, load_levels, ticker, on_done=self.on_loaded, on_error=self.on_failed,
                           on_progress=self.status.setText)
+
+    def set_auto_refresh(self, on: bool):
+        if on:
+            self.refresh_timer.start()
+            self.auto_fetch()
+        else:
+            self.refresh_timer.stop()
+
+    def auto_fetch(self):
+        """Refetch on the timer, but only in US hours and if no fetch is already running."""
+        if not market_data.us_session_open():
+            self.status.setText("Auto-refresh is waiting for US trading hours (09:45-15:55 New York).")
+            return
+        if self.fetch_button.isEnabled():
+            self.fetch()
 
     def open_saved(self, index: int):
         path = self.saved.itemData(index)
@@ -238,17 +267,30 @@ class LevelsTab(QWidget):
         else:
             self.set_summary("1-day implied move", "–", "")
 
+    def gamma_contracts(self) -> tuple[pd.DataFrame, str]:
+        """The contracts in the chosen window, and a note when 0DTE falls back to the nearest expiry."""
+        window = GAMMA_WINDOWS[self.gamma_window.currentText()]
+        if window != ZERO_DTE:
+            return analytics.within_days(self.data.dataset, window), ""
+        front, is_today = analytics.front_expiry(self.data.dataset)
+        note = "" if is_today or front.empty else f"no expiry today, using {front['expiry'].iloc[0]}"
+        return front, note
+
     def recompute_gamma(self):
         self.levels = None
-        if self.data is not None and not self.data.dataset.empty and self.data.open_interest > 0:
-            df = analytics.within_days(self.data.dataset, GAMMA_WINDOWS[self.gamma_window.currentText()])
-            self.levels = analytics.gamma_levels(df) if not df.empty else None
+        self.gamma_df = pd.DataFrame()
+        note = ""
+        if self.data is not None and not self.data.dataset.empty:
+            self.gamma_df, note = self.gamma_contracts()
+            if self.data.open_interest > 0 and not self.gamma_df.empty:
+                self.levels = analytics.gamma_levels(self.gamma_df)
         if self.levels is None:
             for name in SUMMARY[2:]:
                 self.set_summary(name, "–", "")
         else:
             lv = self.levels
             regime = "dealers damp moves" if lv["net"] > 0 else "dealers amplify moves"
+            regime = f"{regime} ({note})" if note else regime
             self.set_summary("Net gamma (per 1%)", format_money(lv["net"]), regime)
             for name, key in (("Gamma flip", "flip"), ("Call wall", "call_wall"), ("Put wall", "put_wall")):
                 value = lv[key]
@@ -275,6 +317,19 @@ class LevelsTab(QWidget):
             ax.axhline(spot, color="grey", lw=1, label="Spot")
             ax.set_xlabel("Days to expiry")
             ax.set_ylabel("Price")
+        elif chart.startswith("Volume"):
+            volume = analytics.volume_by_strike(self.gamma_df) if not self.gamma_df.empty else pd.DataFrame()
+            if volume.empty or volume.to_numpy().sum() == 0:
+                self.plot.message("No volume yet: it builds up during the US session")
+                return
+            volume = volume[(volume.index > spot * 0.95) & (volume.index < spot * 1.05)]
+            width = np.median(np.diff(volume.index)) * 0.8 if len(volume) > 1 else 1.0
+            ax.bar(volume.index, volume["call"], width=width, color=CALL_COLOUR, alpha=0.7, label="Calls traded")
+            ax.bar(volume.index, -volume["put"], width=width, color=PUT_COLOUR, alpha=0.7, label="Puts traded")
+            ax.axhline(0, color="grey", lw=0.8)
+            ax.axvline(spot, color="grey", lw=1, label="Spot")
+            ax.set_xlabel("Strike")
+            ax.set_ylabel("Contracts traded today (puts below zero)")
         elif self.levels is None:
             self.plot.message("Gamma needs open interest: fetch during or after the US session")
             return
@@ -297,7 +352,8 @@ class LevelsTab(QWidget):
             self._mark_levels(ax, spot)
             ax.set_xlabel("Underlying price")
             ax.set_ylabel("Net gamma exposure ($bn per 1% move)")
-        ax.set_title(f"{self.data.ticker} · {chart}")
+        scope = self.gamma_window.currentText() if chart != "Implied move by expiry" else ""
+        ax.set_title(f"{self.data.ticker} · {chart}" + (f" · {scope}" if scope else ""))
         self.plot.legend(ax)
         self.plot.draw()
 
