@@ -1,77 +1,161 @@
-Black-Scholes and Neural Networks for Financial Derivatives Pricing
+# Black-Scholes & Neural Networks
 
-This project focuses on pricing financial derivatives using both traditional methods, such as the Black-Scholes formula, and modern machine learning techniques, specifically neural networks. The application provides a user-friendly GUI that bridges the gap between theoretical finance and practical application, enabling users to perform financial analysis efficiently.
-Table of Contents
+[![CI](https://github.com/issyk0704/Black-Scholes-Neural-Networks/actions/workflows/ci.yml/badge.svg)](https://github.com/issyk0704/Black-Scholes-Neural-Networks/actions/workflows/ci.yml)
 
-Introduction
-Features
-Project Structure
-Installation
-Usage
-Technologies Used
-Future Enhancements
-License
-Introduction
+A desktop app and Python package for pricing equity options with the Black-Scholes model and
+with neural networks trained on real option chains. It tests whether a network can price
+options more accurately than Black-Scholes.
 
-The application is designed to make advanced financial analysis accessible to financial professionals, students, and traders. By integrating numerical solutions for the Black-Scholes equation and neural networks for market predictions, the tool provides robust pricing and analytical capabilities.
-Features
+Originally my final-year project; rebuilt in 2026 with corrected models, current data and a new interface.
 
-Black-Scholes Widget: Computes option prices using the Black-Scholes formula. Includes visualization tools for market trends like volatility and moving averages.
-Neural Network Widget: Trains neural networks on historical stock data to predict option prices and stock behaviors.
-Options Data Widget: Fetches real-time options data, trains models on Call and Put contracts, and predicts bid and ask prices.
-Data Fetcher Class: Dynamically fetches real-time stock and options data from Yahoo Finance APIs.
-GUI Navigation: Simplified navigation screen for accessing different functionalities.
-Project Structure
+![Option chain tab](docs/screenshots/chain.png)
 
-├── BlackScholesWidget.py         # Handles Black-Scholes option pricing
-├── NeuralNetworkWidget.py        # Implements neural network functionality
-├── OptionsDataWidget.py          # Manages options data and predictions
-├── DataFetcher.py                # Fetches real-time financial data
-├── main.py                       # Entry point for the GUI application
-├── Testing/                      # Unit tests for all modules
-├── README.md                     # Project documentation
-Installation
+## What it does
 
-Clone the repository:
+| Tab | |
+|---|---|
+| **Pricer** | Black-Scholes-Merton price and all five Greeks for any contract, updating as you type. Loads spot, the 13-week T-bill rate, trailing dividend yield and 30-day historical volatility for any ticker. Includes an implied-volatility solver and charts of price and Greeks against spot or volatility. |
+| **Market** | Price history with 50/200-day moving averages, 30/60-day realised volatility and the distribution of daily returns. |
+| **Option chain** | Fetches every listed expiry from Yahoo Finance. Each contract is shown with its bid/ask, implied vol, the Black-Scholes price and the neural-network price, and network prices that land inside the bid-ask spread are highlighted. The chart shows the market's volatility smile against the network's. Every fetch is saved as a dated snapshot, so the training set grows over time. |
+| **Neural network** | Trains on any set of saved snapshots, reports test-set accuracy against two Black-Scholes benchmarks, plots errors by moneyness and expiry, and saves or loads models. |
+
+<p>
+  <img src="docs/screenshots/pricer.png" width="49%" alt="Pricer tab">
+  <img src="docs/screenshots/model.png" width="49%" alt="Neural network tab">
+</p>
+
+## Results
+
+There are 25,915 quoted contracts across SPY, QQQ, AAPL and NVDA from snapshots taken on
+7 May 2024, 14 Jan 2025 and 5 Oct 2026. Every number below is on contracts the model never saw.
+"Inside bid-ask" is the share of prices that land between the bid and the ask.
+
+**Out of time: trained on 2024/2025, tested on all 13,531 contracts from 5 Oct 2026**
+
+| Model | MAE ($) | RMSE ($) | Median abs error | Inside bid-ask |
+|---|---:|---:|---:|---:|
+| **Neural net: smile, ATM vol** | **1.61** | **6.55** | **3.6%** | **29.8%** |
+| Neural net: smile, historical vol | 5.09 | 9.74 | 20.8% | 16.4% |
+| Neural net: direct price, ATM vol | 10.11 | 15.73 | 74.5% | 2.9% |
+| Neural net: direct price, historical vol | 6.94 | 12.04 | 31.8% | 6.3% |
+| Black-Scholes, 30-day historical vol | 6.97 | 12.96 | 31.2% | 12.0% |
+| Black-Scholes, ATM implied vol | 2.89 | 7.75 | 7.1% | 18.2% |
+
+**Same days: 20% of expiries held out at random (4,794 test contracts)**
+
+| Model | MAE ($) | RMSE ($) | Median abs error | Inside bid-ask |
+|---|---:|---:|---:|---:|
+| **Neural net: smile, ATM vol** | **0.66** | 3.33 | **1.9%** | **34.0%** |
+| Neural net: smile, historical vol | 1.35 | 3.75 | 8.4% | 20.9% |
+| Neural net: direct price, ATM vol | 0.95 | 3.33 | 3.8% | 18.9% |
+| Neural net: direct price, historical vol | 1.07 | **3.19** | 5.3% | 16.9% |
+| Black-Scholes, 30-day historical vol | 2.31 | 4.95 | 14.9% | 14.1% |
+| Black-Scholes, ATM implied vol | 1.61 | 4.36 | 7.3% | 18.3% |
+
+What this shows:
+
+- **Black-Scholes with one volatility per expiry misses the smile.** Out-of-the-money puts trade at
+  higher implied vols than at-the-money options. Learning that shape roughly halves the error
+  against Black-Scholes using the same ATM vol, both on the same days and on a later date.
+- **Networks that predict prices directly don't carry over to new market conditions.** They beat
+  Black-Scholes on the days they were trained on, but in October 2026 SPY's historical vol (9.6%)
+  was lower than in any training snapshot. With nothing similar to learn from, they did no better
+  than Black-Scholes, or worse. Predicting the smile *relative to* a vol level avoids this.
+- **Historical vol is a weak input on its own.** Options price in expected volatility, not past
+  volatility, which is why every model using the expiry's ATM implied vol does better.
+
+All numbers come from a single run with seed 42 (`bsnn-train --split date` and `bsnn-train`, adding
+`--kind` and `--hist-vol` for the other rows). With other seeds, the network's figures and the
+expiries chosen for the random split will change.
+
+## How the models work
+
+**Data.** Each snapshot is a full option chain from Yahoo Finance, saved with the inputs that applied
+when it was taken: the share price, the 13-week T-bill yield, the trailing 12-month dividend yield and
+30-day historical volatility. A contract is used only if it has a two-sided quote, a bid-ask spread
+under 50% of the mid, a spot/strike ratio between 0.7 and 1.3, and between 1 and 730 days to expiry.
+The model is trained to match the bid/ask mid.
+
+**Implied volatility** is solved from each mid using the snapshot's own rate and dividend yield.
+Yahoo's `impliedVolatility` column isn't used, because it assumes zero rates and dividends, which
+pushes call vols up and put vols down by several points.
+
+**Smile model (default).** For each contract, the network predicts log(implied vol / reference vol)
+from the strike's distance from spot (as a ratio and scaled by vol and time), the time to expiry and
+the option type. The reference is either the at-the-money implied vol of the same expiry or 30-day
+historical vol. Black-Scholes then converts the predicted vol into a price. Because only the
+*shape* of the smile is learned, the model keeps working when the overall level of volatility changes.
+
+**Direct price model.** The network maps scale-free features (log moneyness, time, rate, dividend yield,
+historical vol, option type, and optionally ATM vol) straight to price / strike. It fits the days it
+was trained on, but its inputs barely vary within a snapshot. On a new day with lower volatility than
+anything it has seen, it has to extrapolate and does badly. It's kept as a baseline.
+
+**Network.** 3 × 64 SiLU layers with input normalisation built into the model, Adam, mean-squared error,
+learning-rate halving on plateaus, and early stopping on a validation set of held-out expiries.
+Train/test splits never put one expiry in both sets.
+
+## Getting started
+
+Python 3.10 or later.
+
+```bash
 git clone https://github.com/issyk0704/Black-Scholes-Neural-Networks.git
-Navigate to the project directory:
 cd Black-Scholes-Neural-Networks
-Create and activate a virtual environment (optional but recommended):
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-Install dependencies:
-pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
+pip install -e ".[dev]"
 
-Usage
+bsnn                            # launch the app (or: python -m bsnn)
+```
 
-Run the application:
-python main.py
+To get going:
 
-Navigate through the GUI:
-Select widgets for Black-Scholes calculations, neural network training, or options data analysis.
-Input required parameters and visualize results in real-time.
+1. **Neural network** tab: press **Train** (about a minute on a laptop CPU), then **Save current model**.
+   The newest saved model loads automatically the next time you start the app.
+2. **Option chain** tab: pick a ticker and press **Fetch live chain** to price today's quotes.
+   Each fetch is saved to `data/options/` and becomes available for training.
 
-Testing:
-Run unit tests using:
-python -m unittest discover -s Testing
-Technologies Used
+Training from the command line, for repeatable experiments:
 
+```bash
+bsnn-train                              # smile model, ATM vol, random-expiry split
+bsnn-train --split date --save          # train on older snapshots, test on the newest; keep the model
+bsnn-train --kind price --hist-vol      # the direct-price baseline
+bsnn-train --help
+```
 
-Programming Language: Python
+Run the tests with `pytest`. The GUI tests need a display, or `QT_QPA_PLATFORM=offscreen`.
 
-Libraries:
+## Project layout
 
-PyQt5: For GUI development
-TensorFlow/Keras: For neural network implementation
-yfinance: For fetching real-time stock and options data
-Pandas & NumPy: For data manipulation and processing
+```
+src/bsnn/
+  pricing.py       Black-Scholes-Merton prices, Greeks, implied vol (vectorised NumPy)
+  market_data.py   Yahoo Finance downloads, CSV cache, rates, dividends, realised vol
+  features.py      option snapshots -> modelling dataset
+  model.py         smile and direct-price networks, splits, evaluation, save/load
+  train_cli.py     bsnn-train
+  gui/             PyQt6 app: one module per tab, plus shared workers and plotting
+data/
+  stock/           2-year daily price history per ticker
+  options/         dated option-chain snapshots (TICKER_options_YYYY-MM-DD.csv)
+tests/             pytest suite, including GUI tests via pytest-qt
+scripts/           screenshot generator for this README
+```
 
-Future Enhancements
+## Limitations
 
-Real-Time Data Integration: Extend capabilities for live market data analysis.
-Expanded Financial Instruments: Add support for bonds, commodities, and cryptocurrencies.
-Enhanced Risk Management Tools: Include advanced analytics for portfolio risk assessment.
-User Experience Improvements: Optimize the GUI for better accessibility and customization.
-License
+- The neural-network models are European, but US equity and ETF options are American. Quotes whose mid
+  breaks European no-arbitrage bounds (usually deep in-the-money puts with early-exercise value)
+  are dropped.
+- The bundled data is eight snapshots taken on three days. Results will be more reliable once more days
+  are fetched, and the "newest snapshot date" split is the test to trust.
+- The share price for the 2024/2025 snapshots was recovered from put-call parity, because the exact
+  fetch time wasn't recorded. It agrees with that day's close to within 0.3%.
+- Yahoo Finance data is unofficial and can be delayed or incomplete. This is a research and learning
+  tool, not trading advice.
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+## License
+
+MIT. See [LICENSE](LICENSE).
