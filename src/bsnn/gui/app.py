@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget
 from bsnn import __version__, paths
 from bsnn.gui.chain_tab import ChainTab
 from bsnn.gui.common import AppState, run_in_background
+from bsnn.gui.levels_tab import LevelsTab
 from bsnn.gui.market_tab import MarketTab
 from bsnn.gui.model_tab import ModelTab
 from bsnn.gui.pricer_tab import PricerTab
@@ -26,12 +27,14 @@ class MainWindow(QMainWindow):
         self.pricer_tab = PricerTab(self.state)
         self.market_tab = MarketTab()
         self.chain_tab = ChainTab(self.state)
+        self.levels_tab = LevelsTab()
         self.model_tab = ModelTab(self.state)
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         tabs.addTab(self.pricer_tab, "Pricer")
         tabs.addTab(self.market_tab, "Market")
         tabs.addTab(self.chain_tab, "Option chain")
+        tabs.addTab(self.levels_tab, "Moves && gamma")
         tabs.addTab(self.model_tab, "Neural network")
         self.setCentralWidget(tabs)
 

@@ -116,8 +116,10 @@ class ChainTab(QWidget):
     def on_fetched(self, raw: pd.DataFrame):
         self.fetch_button.setEnabled(True)
         self.refresh_saved()
-        if market_data.live_quote_share(raw) < 0.5:
-            self._source += ". Most quotes are blank: Yahoo clears them outside US hours (14:30-21:00 UK)"
+        if market_data.live_quote_share(raw) < market_data.MIN_LIVE_SHARE:
+            self._source = self._source.replace(", saved to data/options", "")
+            self._source += (". Not saved: most quotes are blank because Yahoo clears them outside "
+                             "US hours (14:30-21:00 UK)")
         self.set_chain(raw, self._source)
 
     def on_failed(self, message: str):

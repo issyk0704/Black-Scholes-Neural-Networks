@@ -7,6 +7,7 @@ from bsnn import pricing  # noqa: E402
 from bsnn.gui import model_tab  # noqa: E402
 from bsnn.gui.app import MainWindow  # noqa: E402
 from bsnn.gui.common import ticker_of  # noqa: E402
+from bsnn.gui.levels_tab import load_levels  # noqa: E402
 from bsnn.gui.market_tab import MarketData  # noqa: E402
 
 from conftest import make_chain  # noqa: E402
@@ -127,6 +128,40 @@ def test_ticker_box_reads_watchlist_labels(window):
     box.setCurrentText(" aapl ")
     assert ticker_of(box) == "AAPL"
     assert all("US10Y" not in window.pricer_tab.ticker.itemText(i) for i in range(window.pricer_tab.ticker.count()))
+
+
+def test_levels_tab_offers_index_and_etf_options(window):
+    tab = window.levels_tab
+    tab.ticker.setCurrentText("NQ — Nasdaq-100 E-mini")
+    assert [tab.source.itemData(i) for i in range(tab.source.count())] == ["^NDX", "QQQ"]
+    tab.ticker.setCurrentText("AAPL")
+    assert [tab.source.itemData(i) for i in range(tab.source.count())] == ["AAPL"]
+
+
+def test_levels_tab_shows_moves_and_gamma(window, tmp_path):
+    path = tmp_path / "TEST_options_2026-01-05.csv"
+    make_chain().to_csv(path, index=False)
+    data = load_levels(None, path)
+    assert data.futures is None and not data.notes
+    tab = window.levels_tab
+    tab.on_loaded(data)
+    assert tab.table.rowCount() == 4
+    assert tab.summary["Spot"][0].text() == "100.00"
+    assert tab.summary["1-day implied move"][0].text().startswith("±")
+    assert tab.summary["Net gamma (per 1%)"][0].text() != "–"
+    for i in range(tab.chart.count()):
+        tab.chart.setCurrentIndex(i)
+    tab.gamma_window.setCurrentText("Next 7 days")  # no expiries that close: gamma clears instead of failing
+    assert tab.summary["Net gamma (per 1%)"][0].text() == "–"
+
+
+def test_levels_tab_explains_missing_open_interest(window, tmp_path):
+    path = tmp_path / "TEST_options_2026-01-05.csv"
+    make_chain().assign(openInterest=0.0).to_csv(path, index=False)
+    data = load_levels(None, path)
+    assert any("open interest" in note for note in data.notes)
+    window.levels_tab.on_loaded(data)
+    assert window.levels_tab.summary["Call wall"][0].text() == "–"
 
 
 def test_model_tab_trains_in_background(window, qtbot, tmp_path, monkeypatch):

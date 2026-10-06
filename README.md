@@ -18,6 +18,7 @@ FX markets, and a new interface.
 | **Pricer** | Price and all five Greeks for any contract, updating as you type, under Black-Scholes-Merton (stocks, ETFs), Black-76 (futures) or Garman-Kohlhagen (FX). Loading a market fills in the price, the 13-week T-bill rate, the carry (dividend yield, or the foreign rate implied from FX futures) and 30-day historical volatility, and picks the right model. Includes an implied-volatility solver and charts of price and Greeks against spot or volatility. |
 | **Market** | Price or yield history with 50/200-day moving averages, 30/60-day realised volatility against the matching implied-vol index (VXN, VIX, VXD, GVZ, MOVE), and the distribution of daily moves. Yields are measured in basis points. |
 | **Option chain** | Fetches every listed expiry from Yahoo Finance (an ETF proxy for futures and FX markets). Each contract is shown with its bid/ask, implied vol, the Black-Scholes price and the neural-network price, and network prices that land inside the bid-ask spread are highlighted. The chart shows the market's volatility smile against the network's. Every fetch is saved as a dated snapshot, so the training set grows over time. |
+| **Moves & gamma** | Implied moves for every expiry (ATM straddle and one-standard-deviation range) and dealer gamma levels (net gamma, gamma flip, call wall, put wall) for SPX, NDX and RUT index options, their ETFs (SPY, QQQ, IWM, DIA) or any stock, with every level converted to the futures we trade (ES, NQ, RTY, YM). |
 | **Neural network** | Trains on any set of saved snapshots, reports test-set accuracy against two Black-Scholes benchmarks, plots errors by asset class, moneyness and expiry, and saves or loads models. |
 
 ## Markets
@@ -44,10 +45,38 @@ US02Y comes from the Federal Reserve's FRED database instead of Yahoo. Yahoo's o
 series (2YY=F) barely trades and shows stale prints that look like 30 bp daily moves. FRED's
 figure is official but published one business day late.
 
+### Implied moves and gamma levels
+
+![Moves & gamma tab](docs/screenshots/levels.png)
+
+**Implied move** is the size of move the options market is pricing, not its direction. It is
+read straight from the quotes for each expiry:
+
+- **Straddle:** the at-the-money call plus put, roughly the expected absolute move.
+- **One-standard-deviation (1σ) move:** spot × ATM implied vol × √(time). Price should stay inside
+  this range about 68% of the time if returns were normally distributed. The straddle is about 0.8 of it.
+- **One-day move:** the nearest expiry's ATM implied vol ÷ √252.
+
+**Gamma levels** estimate how much dealers must buy or sell per 1% move to stay hedged, adding up
+gamma × open interest across every strike. They rest on the common assumption that dealers hold the
+calls customers sell and the puts customers buy, which isn't always true, so treat them as a guide:
+
+- **Net gamma:** positive means dealers sell rallies and buy dips, damping moves. Negative means they
+  chase moves, amplifying them.
+- **Gamma flip:** the price at which net gamma changes sign.
+- **Call wall / put wall:** the strikes with the most call or put gamma, which often act as resistance
+  or support.
+
+For NQ, ES and RTY the tab offers the cash-index options (NDX, SPX, RUT) as well as the ETFs. These
+are where most index gamma sits, and they are European-style, which suits the models. Levels are
+converted to futures points using the futures/underlying price ratio on the snapshot day. Open
+interest is only published during and after the US session, so fetch chains after 14:30 UK.
+
 ### Daily data collection
 
 Option quotes on Yahoo are only live during US trading hours (14:30–21:00 UK). `bsnn-collect`
-saves a snapshot of every proxy's chain. It refuses to run outside the session and skips any chain
+saves a snapshot of every proxy's chain and of the SPX, NDX and RUT index chains. The app also
+refuses to save a chain fetched outside those hours. It refuses to run outside the session and skips any chain
 where fewer than half the contracts have a live quote, which catches holidays and stale data.
 To run it every weekday at 19:30 UK, from the repository root in PowerShell:
 
@@ -183,6 +212,7 @@ src/bsnn/
   pricing.py       Black-Scholes-Merton, Black-76, Garman-Kohlhagen; Greeks, implied vol (vectorised NumPy)
   market_data.py   Yahoo Finance and FRED downloads, CSV cache, rates, dividends, realised vol
   features.py      option snapshots -> modelling dataset
+  analytics.py     implied moves and dealer gamma levels
   model.py         smile and direct-price networks, splits, evaluation, save/load
   train_cli.py     bsnn-train
   collect_cli.py   bsnn-collect

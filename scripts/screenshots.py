@@ -15,12 +15,19 @@ from PyQt6.QtWidgets import QApplication
 
 from bsnn import market_data
 from bsnn.gui.app import MainWindow
+from bsnn.gui.levels_tab import load_levels
 from bsnn.gui.market_tab import load_market
 from bsnn.gui.model_tab import train_from_files
 from bsnn.gui.pricer_tab import load_market_inputs
 from bsnn.model import TrainConfig
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "screenshots"
+
+
+def live_snapshots() -> list[Path]:
+    """Saved snapshots with mostly live quotes (skips any fetched outside US hours)."""
+    return [f for f in market_data.list_option_snapshots()
+            if market_data.live_quote_share(market_data.load_option_snapshots([f])) >= market_data.MIN_LIVE_SHARE]
 
 
 def main():
@@ -33,7 +40,7 @@ def main():
     window.show()
     tabs = window.centralWidget()
 
-    files = market_data.list_option_snapshots()
+    files = live_snapshots()
     result = train_from_files(files, TrainConfig(split="date"), progress=lambda _: None, stop=threading.Event())
     window.model_tab.split.setCurrentIndex(window.model_tab.split.findData("date"))
     window.model_tab.on_trained(result)
@@ -52,7 +59,12 @@ def main():
     latest_spy = [f for f in files if f.name.startswith("SPY")][-1]
     chain.set_chain(market_data.load_option_snapshots([latest_spy]), f"saved snapshot {latest_spy.name}")
 
-    for index, name in enumerate(["pricer", "market", "chain", "model"]):
+    levels = window.levels_tab
+    latest_qqq = [f for f in files if f.name.startswith("QQQ")][-1]
+    levels.ticker.setCurrentText("NQ — Nasdaq-100 E-mini")
+    levels.on_loaded(load_levels(None, latest_qqq))
+
+    for index, name in enumerate(["pricer", "market", "chain", "levels", "model"]):
         tabs.setCurrentIndex(index)
         app.processEvents()
         window.grab().save(str(OUT / f"{name}.png"))
