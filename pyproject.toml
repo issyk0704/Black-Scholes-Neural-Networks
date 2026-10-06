@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bsnn"
+dynamic = ["version"]
+description = "Option pricing with Black-Scholes and neural networks, in a PyQt6 desktop app"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ismail Khan" }]
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.5",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+    "tensorflow>=2.16",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4.4"]
+
+[project.scripts]
+bsnn = "bsnn.gui.app:main"
+bsnn-train = "bsnn.train_cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bsnn.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
