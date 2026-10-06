@@ -25,6 +25,7 @@ from bsnn import paths
 log = logging.getLogger(__name__)
 
 DEFAULT_TICKERS = ("SPY", "QQQ", "AAPL", "NVDA")
+DEFAULT_PERIOD = "2y"
 DEFAULT_RATE = 0.04  # fallback when the T-bill yield can't be fetched
 TRADING_DAYS = 252
 VOL_WINDOW = 30
@@ -72,7 +73,7 @@ def history_path(ticker: str, directory: Path | None = None) -> Path:
     return Path(directory or paths.STOCK_DIR) / f"{ticker.upper()}_data.csv"
 
 
-def fetch_history(ticker: str, period: str = "2y", start=None, directory: Path | None = None,
+def fetch_history(ticker: str, period: str = DEFAULT_PERIOD, start=None, directory: Path | None = None,
                   save: bool = True) -> pd.DataFrame:
     """Download daily price history from Yahoo. ``start`` overrides ``period``."""
     tk = yf.Ticker(ticker)
@@ -91,15 +92,17 @@ def load_history(ticker: str, directory: Path | None = None) -> pd.DataFrame:
     return clean_history(pd.read_csv(history_path(ticker, directory), index_col=0))
 
 
-def get_history(ticker: str, refresh: bool = False, period: str = "2y",
+def get_history(ticker: str, refresh: bool = False, period: str = DEFAULT_PERIOD,
                 directory: Path | None = None) -> pd.DataFrame:
     """Price history from the cache, downloading it when asked to or when nothing is cached.
 
-    If a download fails and a cached copy exists, the cached copy is returned.
+    Only :data:`DEFAULT_PERIOD` downloads are written to the cache, so a short
+    download never replaces a longer cached history. If a download fails and a
+    cached copy exists, the cached copy is returned.
     """
     if refresh or not history_path(ticker, directory).exists():
         try:
-            return fetch_history(ticker, period=period, directory=directory)
+            return fetch_history(ticker, period=period, directory=directory, save=period == DEFAULT_PERIOD)
         except Exception:
             if not history_path(ticker, directory).exists():
                 raise
