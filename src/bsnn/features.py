@@ -17,15 +17,22 @@ import numpy as np
 import pandas as pd
 
 from bsnn import pricing
+from bsnn.instruments import ASSET_CLASSES, SINGLE_STOCK, asset_class_of
 from bsnn.market_data import MARKET_TZ
 
 FEATURES = ["log_moneyness", "time_to_expiry", "risk_free_rate", "dividend_yield", "hist_vol", "is_call"]
 ATM_IV_FEATURE = "atm_iv"
+ASSET_CLASS_FEATURES = {cls: "class_" + cls.lower().replace(" ", "_") for cls in ASSET_CLASSES}
 SECONDS_PER_YEAR = 365 * 24 * 3600
 
 
 def feature_columns(use_atm_iv: bool) -> list[str]:
     return FEATURES + [ATM_IV_FEATURE] if use_atm_iv else list(FEATURES)
+
+
+def add_asset_class_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """One 0/1 column per asset class, from ``df["asset_class"]``."""
+    return df.assign(**{col: (df["asset_class"] == cls).astype(float) for cls, col in ASSET_CLASS_FEATURES.items()})
 
 
 @dataclass(frozen=True)
@@ -49,13 +56,13 @@ def years_to_expiry(snapshot_time, expiry_date):
     return years.to_numpy()
 
 
-def single_contract(S, K, T, r, q, hist_vol, is_call, atm_iv=np.nan) -> pd.DataFrame:
+def single_contract(S, K, T, r, q, hist_vol, is_call, atm_iv=np.nan, asset_class=SINGLE_STOCK) -> pd.DataFrame:
     """A one-row dataset for pricing a contract that isn't in a snapshot."""
-    return pd.DataFrame({
+    return add_asset_class_columns(pd.DataFrame({
         "S": [S], "K": [K], "log_moneyness": [np.log(S / K)], "time_to_expiry": [T],
         "risk_free_rate": [r], "dividend_yield": [q], "hist_vol": [hist_vol],
-        "is_call": [float(is_call)], ATM_IV_FEATURE: [atm_iv],
-    })
+        "is_call": [float(is_call)], ATM_IV_FEATURE: [atm_iv], "asset_class": [asset_class],
+    }))
 
 
 def at_the_money_iv(df: pd.DataFrame) -> pd.Series:
@@ -75,6 +82,7 @@ def build_dataset(chains: pd.DataFrame, filters: Filters = Filters()) -> pd.Data
     K = chains["strike"].to_numpy(dtype=float)
     df = pd.DataFrame({
         "ticker": chains["ticker"].to_numpy(),
+        "asset_class": chains["ticker"].map(asset_class_of).to_numpy(),
         "snapshot": chains["snapshotTime"].to_numpy(),
         "expiry": chains["ExpiryDate"].astype(str).to_numpy(),
         "contract": chains["contractSymbol"].to_numpy() if "contractSymbol" in chains else "",
@@ -114,4 +122,4 @@ def build_dataset(chains: pd.DataFrame, filters: Filters = Filters()) -> pd.Data
     df = df[np.isfinite(df["market_iv"])].reset_index(drop=True)
     df[ATM_IV_FEATURE] = at_the_money_iv(df).to_numpy()
     df["target"] = df["mid"] / df["K"]
-    return df
+    return add_asset_class_columns(df)

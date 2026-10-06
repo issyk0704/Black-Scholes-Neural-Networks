@@ -5,7 +5,8 @@ import pytest
 pytest.importorskip("keras")
 
 from bsnn.features import build_dataset, single_contract  # noqa: E402
-from bsnn.model import BS_ATM, NN, OptionPricer, TrainConfig, split_dataset, train  # noqa: E402
+from bsnn.model import (BS_ATM, NN, OptionPricer, TrainConfig, feature_names, metrics_by_class,  # noqa: E402
+                        split_dataset, train)
 
 from conftest import make_chain  # noqa: E402
 
@@ -54,6 +55,21 @@ def test_train_evaluate_save_load(dataset, tmp_path, kind):
     assert loaded.kind == kind and loaded.metadata["rows"] == result.pricer.metadata["rows"]
     row = single_contract(S=100, K=105, T=0.25, r=0.04, q=0.01, hist_vol=0.2, is_call=True, atm_iv=0.22)
     assert loaded.predict(row) == pytest.approx(result.pricer.predict(row), rel=1e-5)
+
+
+def test_asset_class_inputs(dataset, tmp_path):
+    names = feature_names("smile", "atm_iv", use_asset_class=True)
+    assert names[:4] == ["log_moneyness", "std_moneyness", "time_to_expiry", "is_call"]
+    assert "class_equity_index" in names and len(names) == 4 + 5
+    assert feature_names("smile", "atm_iv", use_asset_class=False) == names[:4]
+
+    result = train(dataset, TrainConfig(epochs=3, hidden_layers=(8,), use_asset_class=True))
+    assert result.pricer.uses_asset_class
+    loaded = OptionPricer.load(result.pricer.save(tmp_path / "m"))
+    assert loaded.features == result.pricer.features
+    by_class = metrics_by_class(result.predictions)
+    assert set(by_class.index.get_level_values("Model")) == {NN, "Black-Scholes (30d hist. vol)", BS_ATM}
+    assert by_class["Contracts"].sum() == 3 * len(result.predictions)
 
 
 def test_training_can_be_stopped(dataset):

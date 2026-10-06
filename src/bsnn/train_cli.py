@@ -13,7 +13,7 @@ import pandas as pd
 
 from bsnn import market_data
 from bsnn.features import build_dataset
-from bsnn.model import MODEL_KINDS, SPLITS, TrainConfig, train
+from bsnn.model import MODEL_KINDS, SPLITS, TrainConfig, metrics_by_class, train
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--split", choices=list(SPLITS), default=TrainConfig.split)
     parser.add_argument("--hist-vol", action="store_true",
                         help="use 30-day historical vol instead of the expiry's ATM implied vol")
+    parser.add_argument("--asset-class", action="store_true",
+                        help="give the network each contract's asset class (equity index, rates, metals, ...)")
     parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     parser.add_argument("--layers", type=int, nargs="+", default=list(TrainConfig.hidden_layers))
     parser.add_argument("--seed", type=int, default=TrainConfig.seed)
@@ -36,7 +38,8 @@ def main(argv: list[str] | None = None) -> None:
     dataset = build_dataset(market_data.load_option_snapshots(files))
     print(f"{len(dataset):,} contracts from {len(files)} snapshot(s)")
 
-    config = TrainConfig(kind=args.kind, use_atm_iv=not args.hist_vol, hidden_layers=tuple(args.layers),
+    config = TrainConfig(kind=args.kind, use_atm_iv=not args.hist_vol, use_asset_class=args.asset_class,
+                         hidden_layers=tuple(args.layers),
                          epochs=args.epochs, split=args.split, seed=args.seed)
 
     def report(epoch, total, logs):
@@ -49,6 +52,9 @@ def main(argv: list[str] | None = None) -> None:
           f"validated on {rows['validation']:,}; {result.pricer.metadata['epochs_run']} epochs)\n")
     with pd.option_context("display.width", 160, "display.max_columns", 10, "display.float_format", "{:.2f}".format):
         print(result.metrics)
+        if result.predictions["asset_class"].nunique() > 1:
+            print("\nBy asset class:\n")
+            print(metrics_by_class(result.predictions))
     if args.save:
         print(f"\nSaved to {result.pricer.save()}")
 

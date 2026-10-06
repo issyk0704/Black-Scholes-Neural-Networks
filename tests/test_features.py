@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bsnn.features import ATM_IV_FEATURE, FEATURES, Filters, build_dataset, feature_columns, years_to_expiry
+from bsnn.features import (ASSET_CLASS_FEATURES, ATM_IV_FEATURE, FEATURES, Filters, build_dataset,
+                           feature_columns, years_to_expiry)
 
 from conftest import make_chain
 
@@ -45,3 +46,15 @@ def test_multiple_snapshots_and_tickers():
     ds = build_dataset(chains)
     assert set(ds["ticker"]) == {"AAA", "BBB"}
     assert list(FEATURES) == feature_columns(False)
+
+
+def test_asset_class_columns():
+    ds = build_dataset(pd.concat([make_chain(ticker="SPY"), make_chain(ticker="GLD"), make_chain(ticker="AAPL")]))
+    assert ds.groupby("ticker")["asset_class"].first().to_dict() == {
+        "AAPL": "Single stock", "GLD": "Metals", "SPY": "Equity index"}
+    assert (ds[list(ASSET_CLASS_FEATURES.values())].sum(axis=1) == 1).all()
+    assert ds.loc[ds["ticker"] == "GLD", "class_metals"].eq(1).all()
+
+
+def test_empty_chain_gives_empty_dataset(chain):
+    assert build_dataset(chain.assign(bid=0.0)).empty

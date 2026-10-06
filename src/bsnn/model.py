@@ -33,7 +33,7 @@ import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
 
 from bsnn import paths, pricing
-from bsnn.features import ATM_IV_FEATURE, feature_columns
+from bsnn.features import ASSET_CLASS_FEATURES, ATM_IV_FEATURE, feature_columns
 from bsnn.market_data import market_date
 
 MODEL_KINDS = {"smile": "Volatility smile → Black-Scholes", "price": "Direct price"}
@@ -58,6 +58,9 @@ def _keras():
 class TrainConfig:
     kind: str = "smile"
     use_atm_iv: bool = True
+    # Off by default: on equity-only data it made results slightly worse (Oct 2026). Worth
+    # re-testing once collected snapshots cover several asset classes.
+    use_asset_class: bool = False
     hidden_layers: tuple[int, ...] = (64, 64, 64)
     epochs: int = 300
     batch_size: int = 256
@@ -72,16 +75,25 @@ def reference_vol(use_atm_iv: bool) -> str:
     return ATM_IV_FEATURE if use_atm_iv else "hist_vol"
 
 
-def model_inputs(df: pd.DataFrame, kind: str, reference: str) -> tuple[list[str], np.ndarray]:
-    """(feature names, input matrix) for a model of ``kind`` using ``reference`` vol."""
+def feature_names(kind: str, reference: str, use_asset_class: bool) -> list[str]:
+    """The network's inputs, in order, for a model of ``kind`` using ``reference`` vol."""
     if kind == "smile":
-        std_moneyness = df["log_moneyness"] / (df[reference] * np.sqrt(df["time_to_expiry"]))
-        X = np.column_stack([df["log_moneyness"], std_moneyness, df["time_to_expiry"], df["is_call"]])
-        return SMILE_FEATURES, X.astype(np.float32)
-    if kind == "price":
+        names = list(SMILE_FEATURES)
+    elif kind == "price":
         names = feature_columns(reference == ATM_IV_FEATURE)
-        return names, df[names].to_numpy(dtype=np.float32)
-    raise ValueError(f"Unknown model kind {kind!r}; choose from {', '.join(MODEL_KINDS)}")
+    else:
+        raise ValueError(f"Unknown model kind {kind!r}; choose from {', '.join(MODEL_KINDS)}")
+    return names + list(ASSET_CLASS_FEATURES.values()) if use_asset_class else names
+
+
+def model_inputs(df: pd.DataFrame, features: list[str], reference: str) -> np.ndarray:
+    """The input matrix for ``features``; ``std_moneyness`` is derived from ``reference`` vol."""
+    def column(name):
+        if name == "std_moneyness":
+            return df["log_moneyness"] / (df[reference] * np.sqrt(df["time_to_expiry"]))
+        return df[name]
+
+    return np.column_stack([column(name) for name in features]).astype(np.float32)
 
 
 def model_target(df: pd.DataFrame, kind: str, reference: str) -> np.ndarray:
@@ -135,6 +147,7 @@ class OptionPricer:
     model: object
     kind: str
     reference: str
+    features: list[str]
     metadata: dict = field(default_factory=dict)
 
     @property
@@ -142,16 +155,17 @@ class OptionPricer:
         return self.reference == ATM_IV_FEATURE
 
     @property
-    def features(self) -> list[str]:
-        return SMILE_FEATURES if self.kind == "smile" else feature_columns(self.uses_atm_iv)
+    def uses_asset_class(self) -> bool:
+        return any(name in self.features for name in ASSET_CLASS_FEATURES.values())
 
     @property
     def description(self) -> str:
         vol = "ATM implied vol" if self.uses_atm_iv else "30d historical vol"
-        return f"{MODEL_KINDS[self.kind]}, using {vol}"
+        by_class = ", per asset class" if self.uses_asset_class else ""
+        return f"{MODEL_KINDS[self.kind]}, using {vol}{by_class}"
 
     def _raw(self, df: pd.DataFrame) -> np.ndarray:
-        _, X = model_inputs(df, self.kind, self.reference)
+        X = model_inputs(df, self.features, self.reference)
         # Calling the model directly (not .predict) avoids a TensorFlow retrace per new input size.
         return np.asarray(self.model(X, training=False)).ravel()
 
@@ -182,9 +196,8 @@ class OptionPricer:
     def load(cls, path: Path) -> OptionPricer:
         path = Path(path)
         meta = json.loads(path.with_suffix(".json").read_text())
-        kind, reference = meta.pop("kind"), meta.pop("reference")
-        meta.pop("features", None)
-        return cls(_keras().saving.load_model(path), kind, reference, meta)
+        kind, reference, features = meta.pop("kind"), meta.pop("reference"), meta.pop("features")
+        return cls(_keras().saving.load_model(path), kind, reference, features, meta)
 
 
 def build_network(train_X: np.ndarray, config: TrainConfig):
@@ -235,6 +248,15 @@ def evaluate(pricer: OptionPricer, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
     return predictions, metrics
 
 
+def metrics_by_class(predictions: pd.DataFrame) -> pd.DataFrame:
+    """:func:`price_metrics` for every model within each asset class, plus a contract count."""
+    rows = {}
+    for asset_class, group in predictions.groupby("asset_class"):
+        for name in (NN, BS_HIST, BS_ATM):
+            rows[(asset_class, name)] = {**price_metrics(group[name].to_numpy(), group), "Contracts": len(group)}
+    return pd.DataFrame(rows).T.rename_axis(["Asset class", "Model"])
+
+
 @dataclass
 class TrainingResult:
     pricer: OptionPricer
@@ -254,11 +276,12 @@ def train(dataset: pd.DataFrame, config: TrainConfig = TrainConfig(),
     keras = _keras()
     keras.utils.set_random_seed(config.seed)
     reference = reference_vol(config.use_atm_iv)
+    features = feature_names(config.kind, reference, config.use_asset_class)
     train_df, test_df = split_dataset(dataset, config.split, config.test_size, config.seed)
     fit_df, val_df = split_dataset(train_df, "expiry", 0.15, config.seed)
 
     def xy(df):
-        return model_inputs(df, config.kind, reference)[1], model_target(df, config.kind, reference)
+        return model_inputs(df, features, reference), model_target(df, config.kind, reference)
 
     (fit_X, fit_y), val_data = xy(fit_df), xy(val_df)
     model = build_network(fit_X, config)
@@ -278,12 +301,13 @@ def train(dataset: pd.DataFrame, config: TrainConfig = TrainConfig(),
             Progress(),
         ])
 
-    pricer = OptionPricer(model, config.kind, reference)
+    pricer = OptionPricer(model, config.kind, reference, features)
     predictions, metrics = evaluate(pricer, test_df)
     pricer.metadata = {
         "created": dt.datetime.now().isoformat(timespec="seconds"),
         "config": asdict(config),
         "tickers": sorted(dataset["ticker"].unique()),
+        "asset_classes": sorted(dataset["asset_class"].unique()),
         "snapshot_dates": sorted({str(d.date()) for d in _snapshot_dates(dataset)}),
         "rows": {"train": len(fit_df), "validation": len(val_df), "test": len(test_df)},
         "epochs_run": len(history.history["loss"]),
