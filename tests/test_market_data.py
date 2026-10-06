@@ -6,6 +6,8 @@ import pytest
 
 from bsnn import market_data as md
 
+from conftest import make_chain
+
 
 def test_market_dates_handles_offsets_and_dst():
     idx = md.market_dates(["2024-03-08 00:00:00-05:00", "2024-03-11 00:00:00-04:00"])
@@ -93,9 +95,40 @@ def test_compressed_snapshots_round_trip(tmp_path, chain):
     assert md.snapshot_label(tmp_path / "SPY_options_2026-10-05.csv") == "SPY  2026-10-05"
 
 
+def test_fetch_does_not_save_chains_with_blank_quotes(tmp_path, chain):
+    fake = MagicMock()
+    fake.return_value.options = ("2026-02-20",)
+    blank = chain[chain["ExpiryDate"] == "2026-02-20"].assign(bid=0.0, ask=0.0)
+    fake.return_value.option_chain.return_value = MagicMock(calls=blank[blank["OptionType"] == "Call"],
+                                                            puts=blank[blank["OptionType"] == "Put"])
+    history = pd.DataFrame({"Close": 100 * np.exp(np.linspace(0, 0.1, 60))},
+                           index=pd.bdate_range("2025-10-01", periods=60, tz="America/New_York"))
+    fake.return_value.history.return_value = history
+    fake.return_value.fast_info = {"lastPrice": 100.0}
+    with patch.object(md.yf, "Ticker", fake), patch.object(md, "risk_free_rate", return_value=0.04):
+        out = md.fetch_option_chain("TEST", directory=tmp_path)
+    assert len(out) == len(blank)
+    assert md.list_option_snapshots(tmp_path) == []
+
+
 def test_live_quote_share(chain):
     assert md.live_quote_share(chain) == 1.0
     assert md.live_quote_share(chain.assign(bid=0.0)) == 0.0
+
+
+def test_parity_dividend_yield_recovers_index_yield():
+    chain = make_chain(q=0.013)
+    assert md.parity_dividend_yield(chain, 100.0, 0.04, chain["snapshotTime"].iloc[0]) == pytest.approx(0.013, abs=1e-4)
+    assert md.parity_dividend_yield(chain.assign(bid=0.0), 100.0, 0.04, chain["snapshotTime"].iloc[0]) == 0.0
+
+
+def test_cash_index_snapshot_takes_yield_from_parity(history):
+    snapshot = history.index[220].tz_localize("America/New_York") + pd.Timedelta(hours=12)
+    chain = make_chain(snapshot=snapshot.isoformat(), q=0.013,
+                       expiries=("2025-12-19", "2026-01-16")).drop(columns=md.SNAPSHOT_COLUMNS)
+    out = md.enrich_snapshot(chain, "^SPX", snapshot, spot=100.0, history=history, rate=0.04)
+    assert out["dividendYield"].iloc[0] == pytest.approx(0.013, abs=1e-4)
+    assert md.is_cash_index("^SPX") and not md.is_cash_index("SPY")
 
 
 def test_foreign_rate_from_futures():

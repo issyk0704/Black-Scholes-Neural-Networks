@@ -30,7 +30,23 @@ def test_option_proxies_are_distinct_and_ordered():
     assert proxies[:4] == ["QQQ", "SPY", "DIA", "IWM"]
 
 
+def test_option_sources_add_cash_indices():
+    assert instruments.option_sources() == instruments.option_proxies() + ["^NDX", "^SPX", "^RUT"]
+
+
+@pytest.mark.parametrize("ticker, symbol", [("QQQ", "NQ"), ("^NDX", "NQ"), ("SPY", "ES"), ("^SPX", "ES"),
+                                            ("IWM", "RTY"), ("^RUT", "RTY"), ("DIA", "YM"), ("TLT", "ZB")])
+def test_futures_for(ticker, symbol):
+    assert instruments.futures_for(ticker).symbol == symbol
+
+
+def test_futures_for_unknown_and_gold():
+    assert instruments.futures_for("AAPL") is None
+    assert instruments.futures_for("GLD").price_ticker == "GC=F"
+
+
 def test_asset_class_of_proxies_and_stocks():
+    assert instruments.asset_class_of("^SPX") == instruments.EQUITY_INDEX
     assert instruments.asset_class_of("spy") == instruments.EQUITY_INDEX
     assert instruments.asset_class_of("TLT") == instruments.RATES
     assert instruments.asset_class_of("GLD") == instruments.METALS

@@ -212,6 +212,46 @@ def implied_foreign_rate(spot: float, futures_ticker: str, domestic_rate: float)
 
 # --- Option chains -----------------------------------------------------------
 
+SECONDS_PER_YEAR = 365 * 24 * 3600
+
+
+def years_to_expiry(snapshot_time, expiry_date):
+    """Years from the snapshot to 4pm New York time on the expiry date."""
+    snap = pd.to_datetime(pd.Series(np.asarray(snapshot_time)), utc=True, format="mixed")
+    expiry = pd.to_datetime(pd.Series(np.asarray(expiry_date).astype(str)))
+    expiry = (expiry + pd.Timedelta(hours=16)).dt.tz_localize(MARKET_TZ)
+    years = (expiry.dt.tz_convert("UTC") - snap).dt.total_seconds() / SECONDS_PER_YEAR
+    return years.to_numpy()
+
+
+def parity_dividend_yield(chain: pd.DataFrame, spot: float, rate: float, snapshot_time,
+                          min_days: float = 14, max_days: float = 120) -> float:
+    """Dividend yield implied by put-call parity on near-the-money pairs.
+
+    For European options C - P = exp(-rT) * (F - K), which gives the forward F
+    and so the yield q = r - ln(F/S)/T. Used for cash indices (SPX, NDX, RUT),
+    whose Yahoo price history has no dividends. Returns 0.0 if no pairs qualify.
+    """
+    quoted = chain[(chain["bid"] > 0) & (chain["ask"] > 0)]
+    mids = quoted.assign(mid=(quoted["bid"] + quoted["ask"]) / 2)
+    calls = mids[mids["OptionType"] == "Call"].set_index(["ExpiryDate", "strike"])["mid"]
+    puts = mids[mids["OptionType"] == "Put"].set_index(["ExpiryDate", "strike"])["mid"]
+    pairs = pd.concat({"call": calls, "put": puts}, axis=1, join="inner").reset_index()
+    if pairs.empty:
+        return 0.0
+    T = years_to_expiry([pd.Timestamp(snapshot_time).isoformat()] * len(pairs), pairs["ExpiryDate"])
+    near = ((T * 365 >= min_days) & (T * 365 <= max_days) & (abs(pairs["strike"] / spot - 1) < 0.03)).to_numpy()
+    if not near.any():
+        return 0.0
+    forward = pairs["strike"][near] + np.exp(rate * T[near]) * (pairs["call"][near] - pairs["put"][near])
+    return float(np.median(rate - np.log(forward / spot) / T[near]))
+
+
+def is_cash_index(ticker: str) -> bool:
+    """Yahoo's cash indices (^SPX, ^NDX, ^RUT) start with '^' and have European options."""
+    return ticker.startswith("^")
+
+
 def option_snapshot_path(ticker: str, snapshot_time, directory: Path | None = None) -> Path:
     """Where a snapshot is saved. New snapshots are gzipped (a full day is ~10 MB as plain CSV)."""
     day = market_date(snapshot_time)
@@ -234,17 +274,24 @@ def snapshot_label(path: Path) -> str:
 
 def enrich_snapshot(chain: pd.DataFrame, ticker: str, snapshot_time, *, spot: float,
                     history: pd.DataFrame, rate: float) -> pd.DataFrame:
-    """Attach the market inputs that applied at ``snapshot_time`` to every contract."""
+    """Attach the market inputs that applied at ``snapshot_time`` to every contract.
+
+    A cash index's price history has no dividends, so its yield comes from put-call parity.
+    """
     upto = history.loc[:market_date(snapshot_time)]
     vol = realized_vol(upto["Close"]).iloc[-1] if len(upto) else np.nan
     if not np.isfinite(vol):
         raise ValueError(f"Not enough price history before {snapshot_time} to estimate volatility")
+    if is_cash_index(ticker):
+        q = parity_dividend_yield(chain, spot, rate, snapshot_time)
+    else:
+        q = dividend_yield(history, snapshot_time)
     return chain.assign(
         ticker=ticker.upper(),
         snapshotTime=pd.Timestamp(snapshot_time).isoformat(),
         underlyingPrice=float(spot),
         riskFreeRate=float(rate),
-        dividendYield=dividend_yield(history, snapshot_time),
+        dividendYield=q,
         histVol=float(vol),
     )
 
@@ -259,10 +306,17 @@ def _live_price(tk, history: pd.DataFrame) -> float:
     return float(history["Close"].iloc[-1])
 
 
+MIN_LIVE_SHARE = 0.5  # below this, a chain was fetched outside US hours or on a holiday
+
+
 def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = True,
                        progress: Callable[[str], None] | None = None,
                        max_expiries: int | None = None) -> pd.DataFrame:
-    """Download every listed expiry for ``ticker`` and save it as a dated snapshot."""
+    """Download every listed expiry for ``ticker`` and save it as a dated snapshot.
+
+    A chain where fewer than :data:`MIN_LIVE_SHARE` of contracts have a live quote
+    is returned but not saved, so it can't end up in a training set.
+    """
     tk = yf.Ticker(ticker)
     expiries = list(tk.options)[:max_expiries]
     if not expiries:
@@ -278,7 +332,7 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     history = clean_history(tk.history(period="1y", auto_adjust=False))
     chain = enrich_snapshot(pd.concat(frames, ignore_index=True), ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
-    if save:
+    if save and live_quote_share(chain) >= MIN_LIVE_SHARE:
         save_option_snapshot(chain, directory)
     return chain
 

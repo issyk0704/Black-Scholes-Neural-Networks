@@ -26,16 +26,18 @@ class Instrument:
     options_proxy: str  # Yahoo symbol with listed options
     proxy_is_thin: bool = False  # too few strikes/expiries to learn much from
     vol_index: str | None = None  # Yahoo symbol of the matching implied-vol index
+    index_options: str | None = None  # cash-index options (European, where most index gamma sits)
     futures_ticker: str | None = None  # FX only: futures used to infer the foreign interest rate
     is_yield: bool = False  # quoted in percent; changes are measured in basis points
     note: str = ""
 
 
 INSTRUMENTS = [
-    Instrument("NQ", "Nasdaq-100 E-mini", EQUITY_INDEX, "NQ=F", BLACK76, "QQQ", vol_index="^VXN"),
-    Instrument("ES", "S&P 500 E-mini", EQUITY_INDEX, "ES=F", BLACK76, "SPY", vol_index="^VIX"),
+    Instrument("NQ", "Nasdaq-100 E-mini", EQUITY_INDEX, "NQ=F", BLACK76, "QQQ", vol_index="^VXN", index_options="^NDX"),
+    Instrument("ES", "S&P 500 E-mini", EQUITY_INDEX, "ES=F", BLACK76, "SPY", vol_index="^VIX", index_options="^SPX"),
+    # DJX (Dow index) options are too thin on Yahoo, so YM relies on DIA.
     Instrument("YM", "Dow E-mini", EQUITY_INDEX, "YM=F", BLACK76, "DIA", vol_index="^VXD"),
-    Instrument("RTY", "Russell 2000 E-mini", EQUITY_INDEX, "RTY=F", BLACK76, "IWM"),
+    Instrument("RTY", "Russell 2000 E-mini", EQUITY_INDEX, "RTY=F", BLACK76, "IWM", index_options="^RUT"),
     Instrument("DXY", "US Dollar Index", FX, "DX-Y.NYB", BLACK76, "UUP", proxy_is_thin=True,
                note="Yahoo has the index, not DX futures; the index level stands in for the futures price."),
     Instrument("EU", "EUR/USD", FX, "EURUSD=X", GARMAN_KOHLHAGEN, "FXE", proxy_is_thin=True, futures_ticker="6E=F"),
@@ -58,7 +60,8 @@ INSTRUMENTS = [
 ]
 
 _BY_SYMBOL = {i.symbol: i for i in INSTRUMENTS}
-_CLASS_BY_PROXY = {i.options_proxy: i.asset_class for i in INSTRUMENTS}
+_CLASS_BY_PROXY = {i.options_proxy: i.asset_class for i in INSTRUMENTS} | {
+    i.index_options: i.asset_class for i in INSTRUMENTS if i.index_options}
 
 
 def resolve(symbol: str) -> Instrument | None:
@@ -69,6 +72,20 @@ def resolve(symbol: str) -> Instrument | None:
 def option_proxies() -> list[str]:
     """Every distinct options proxy, in watchlist order."""
     return list(dict.fromkeys(i.options_proxy for i in INSTRUMENTS))
+
+
+def option_sources() -> list[str]:
+    """Everything the daily collector saves: the ETF proxies, then the cash-index chains."""
+    return option_proxies() + [i.index_options for i in INSTRUMENTS if i.index_options]
+
+
+def futures_for(option_ticker: str) -> Instrument | None:
+    """The traded futures whose levels an option underlying can be converted to (QQQ or ^NDX -> NQ)."""
+    ticker = option_ticker.upper()
+    for inst in INSTRUMENTS:
+        if inst.model == BLACK76 and ticker in (inst.options_proxy, inst.index_options):
+            return inst
+    return None
 
 
 def asset_class_of(ticker: str) -> str:

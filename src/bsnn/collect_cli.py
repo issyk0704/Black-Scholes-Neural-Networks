@@ -1,6 +1,6 @@
 """Daily collection of option-chain snapshots for every watchlist market.
 
-    bsnn-collect               # every options proxy in bsnn.instruments
+    bsnn-collect               # every options proxy and cash index (SPX, NDX, RUT) in bsnn.instruments
     bsnn-collect SPY QQQ       # just these tickers
     bsnn-collect --force       # skip the US-market-hours check
 
@@ -22,10 +22,9 @@ from pathlib import Path
 import pandas as pd
 
 from bsnn import market_data, paths
-from bsnn.instruments import option_proxies
+from bsnn.instruments import option_sources
 
 SESSION_START, SESSION_END = dt.time(9, 45), dt.time(15, 55)  # New York time, avoiding the open and close
-MIN_LIVE_SHARE = 0.5
 
 log = logging.getLogger("bsnn.collect")
 
@@ -44,7 +43,7 @@ def collect(tickers: list[str], directory: Path | None = None,
         try:
             chain = fetch(ticker, save=False)
             share = market_data.live_quote_share(chain)
-            if share < MIN_LIVE_SHARE:
+            if share < market_data.MIN_LIVE_SHARE:
                 outcomes[ticker] = f"skipped: only {share:.0%} of {len(chain)} contracts had a live quote"
                 continue
             path = market_data.save_option_snapshot(chain, directory)
@@ -56,7 +55,7 @@ def collect(tickers: list[str], directory: Path | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Save today's option chains for the watchlist proxies.")
-    parser.add_argument("tickers", nargs="*", help="defaults to every options proxy in the watchlist")
+    parser.add_argument("tickers", nargs="*", help="defaults to every options proxy and cash index in the watchlist")
     parser.add_argument("--force", action="store_true", help="run even outside US market hours")
     args = parser.parse_args(argv)
 
@@ -65,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.force and not us_session_open():
             log.info("US options market is closed; nothing collected. Use --force to override.")
             return 0
-        outcomes = collect([t.upper() for t in args.tickers] or option_proxies())
+        outcomes = collect([t.upper() for t in args.tickers] or option_sources())
         for ticker, outcome in outcomes.items():
             log.info("%-5s %s", ticker, outcome)
         failures = sum(outcome.startswith("failed") for outcome in outcomes.values())

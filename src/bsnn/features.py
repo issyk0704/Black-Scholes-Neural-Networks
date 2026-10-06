@@ -18,12 +18,11 @@ import pandas as pd
 
 from bsnn import pricing
 from bsnn.instruments import ASSET_CLASSES, SINGLE_STOCK, asset_class_of
-from bsnn.market_data import MARKET_TZ
+from bsnn.market_data import years_to_expiry  # noqa: F401  (re-exported; it used to live here)
 
 FEATURES = ["log_moneyness", "time_to_expiry", "risk_free_rate", "dividend_yield", "hist_vol", "is_call"]
 ATM_IV_FEATURE = "atm_iv"
 ASSET_CLASS_FEATURES = {cls: "class_" + cls.lower().replace(" ", "_") for cls in ASSET_CLASSES}
-SECONDS_PER_YEAR = 365 * 24 * 3600
 
 
 def feature_columns(use_atm_iv: bool) -> list[str]:
@@ -45,15 +44,6 @@ class Filters:
     max_moneyness: float = 1.3
     max_relative_spread: float = 0.5  # (ask - bid) / mid
     min_price: float = 0.05
-
-
-def years_to_expiry(snapshot_time, expiry_date):
-    """Years from the snapshot to 4pm New York time on the expiry date."""
-    snap = pd.to_datetime(pd.Series(np.asarray(snapshot_time)), utc=True, format="mixed")
-    expiry = pd.to_datetime(pd.Series(np.asarray(expiry_date).astype(str)))
-    expiry = (expiry + pd.Timedelta(hours=16)).dt.tz_localize(MARKET_TZ)
-    years = (expiry.dt.tz_convert("UTC") - snap).dt.total_seconds() / SECONDS_PER_YEAR
-    return years.to_numpy()
 
 
 def single_contract(S, K, T, r, q, hist_vol, is_call, atm_iv=np.nan, asset_class=SINGLE_STOCK) -> pd.DataFrame:
@@ -97,6 +87,7 @@ def build_dataset(chains: pd.DataFrame, filters: Filters = Filters()) -> pd.Data
         "dividend_yield": chains["dividendYield"].to_numpy(dtype=float),
         "hist_vol": chains["histVol"].to_numpy(dtype=float),
         "is_call": (chains["OptionType"] == "Call").to_numpy(dtype=float),
+        "open_interest": chains["openInterest"].fillna(0).to_numpy(dtype=float) if "openInterest" in chains else 0.0,
     })
 
     days = df["time_to_expiry"] * 365
