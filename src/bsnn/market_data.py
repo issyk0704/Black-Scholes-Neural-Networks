@@ -11,6 +11,7 @@ dataset built from old snapshots never needs to go back to the network.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Callable, Iterable
 from functools import lru_cache
@@ -307,6 +308,40 @@ def _live_price(tk, history: pd.DataFrame) -> float:
 
 
 MIN_LIVE_SHARE = 0.5  # below this, a chain was fetched outside US hours or on a holiday
+# New York times. The collector runs inside the session, away from the open and close.
+SESSION_START, SESSION_END = dt.time(9, 45), dt.time(15, 55)
+# Quotes stay at their closing values after 16:00 until SPX's overnight session starts at 20:15,
+# whose quotes are wide and thin; snapshots from 09:45 to 20:00 are fit for training.
+QUOTES_RELIABLE_UNTIL = dt.time(20, 0)
+
+
+def _new_york(ts: pd.Timestamp | None) -> pd.Timestamp:
+    ts = pd.Timestamp(ts) if ts is not None else pd.Timestamp.now(tz="UTC")
+    return ts.tz_convert(MARKET_TZ) if ts.tz is not None else ts.tz_localize("UTC").tz_convert(MARKET_TZ)
+
+
+def us_session_open(now: pd.Timestamp | None = None) -> bool:
+    """True on a weekday between 09:45 and 15:55 New York time."""
+    now = _new_york(now)
+    return now.weekday() < 5 and SESSION_START <= now.time() <= SESSION_END
+
+
+def snapshot_problem(chain: pd.DataFrame) -> str | None:
+    """Why a chain shouldn't be saved for training, or None if it's fine.
+
+    It must be taken on a weekday between 09:45 and 20:00 New York time (SPX
+    options also quote overnight, but those quotes are wide and thin) and most
+    contracts must have a live quote.
+    """
+    if chain.empty:
+        return "the chain is empty"
+    taken = _new_york(pd.Timestamp(chain["snapshotTime"].iloc[0]))
+    if taken.weekday() >= 5 or not SESSION_START <= taken.time() <= QUOTES_RELIABLE_UNTIL:
+        return "it was taken outside US trading hours (09:45-20:00 New York)"
+    share = live_quote_share(chain)
+    if share < MIN_LIVE_SHARE:
+        return f"only {share:.0%} of {len(chain):,} contracts had a live quote"
+    return None
 
 
 def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = True,
@@ -314,8 +349,8 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
                        max_expiries: int | None = None) -> pd.DataFrame:
     """Download every listed expiry for ``ticker`` and save it as a dated snapshot.
 
-    A chain where fewer than :data:`MIN_LIVE_SHARE` of contracts have a live quote
-    is returned but not saved, so it can't end up in a training set.
+    A chain that :func:`snapshot_problem` rejects is returned but not saved, so it
+    can't end up in a training set.
     """
     tk = yf.Ticker(ticker)
     expiries = list(tk.options)[:max_expiries]
@@ -332,7 +367,7 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     history = clean_history(tk.history(period="1y", auto_adjust=False))
     chain = enrich_snapshot(pd.concat(frames, ignore_index=True), ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
-    if save and live_quote_share(chain) >= MIN_LIVE_SHARE:
+    if save and snapshot_problem(chain) is None:
         save_option_snapshot(chain, directory)
     return chain
 

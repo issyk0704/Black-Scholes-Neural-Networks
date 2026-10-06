@@ -119,6 +119,17 @@ def test_snapshots_in_subfolders_are_found_once(tmp_path, chain):
     assert md.list_option_snapshots(tmp_path) == [only_cloud, local]
 
 
+@pytest.mark.parametrize("snapshot, ok", [
+    ("2026-10-05T14:30:00+00:00", True),    # Monday 10:30 New York
+    ("2026-10-05T23:30:00+00:00", True),    # Monday 19:30 New York: closing quotes, still fine
+    ("2026-10-06T00:29:00+00:00", False),   # Monday 20:29 New York: SPX's overnight session is about to start
+    ("2026-10-06T10:33:00+00:00", False),   # Tuesday 06:33 New York, before the open
+    ("2026-10-10T15:00:00+00:00", False),   # Saturday
+])
+def test_snapshot_problem_checks_trading_hours(chain, snapshot, ok):
+    assert (md.snapshot_problem(chain.assign(snapshotTime=snapshot)) is None) is ok
+
+
 def test_live_quote_share(chain):
     assert md.live_quote_share(chain) == 1.0
     assert md.live_quote_share(chain.assign(bid=0.0)) == 0.0

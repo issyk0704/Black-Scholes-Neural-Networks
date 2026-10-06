@@ -49,9 +49,12 @@ def load_levels(ticker: str, path: Path | None = None, progress=None) -> LevelsD
     ticker = raw["ticker"].iloc[0]
     data = LevelsData(ticker, raw["snapshotTime"].iloc[0], build_dataset(raw, FILTERS), pd.DataFrame(),
                       float(raw["openInterest"].fillna(0).sum()) if "openInterest" in raw else 0.0)
-    if market_data.live_quote_share(raw) < market_data.MIN_LIVE_SHARE:
-        data.notes.append("Most quotes are blank (Yahoo clears them outside US hours, 14:30-21:00 UK), "
-                          "so these levels are unreliable.")
+    # A saved snapshot passed this check when it was saved (or predates it), so only quote
+    # coverage is re-checked; a live fetch must also fall within US trading hours.
+    problem = market_data.snapshot_problem(raw) if path is None else (
+        "most quotes are blank" if market_data.live_quote_share(raw) < market_data.MIN_LIVE_SHARE else None)
+    if problem:
+        data.notes.append(f"These levels are unreliable: {problem}. Fetch between 14:45 and 21:00 UK.")
     if data.dataset.empty:
         return data
     data.moves = analytics.implied_moves(data.dataset)

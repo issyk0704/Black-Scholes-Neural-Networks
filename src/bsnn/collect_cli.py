@@ -2,19 +2,19 @@
 
     bsnn-collect               # every options proxy and cash index (SPX, NDX, RUT) in bsnn.instruments
     bsnn-collect SPY QQQ       # just these tickers
-    bsnn-collect --force       # skip the US-market-hours check
+    bsnn-collect --force       # run outside US hours anyway (tests that Yahoo is reachable)
 
 Yahoo blanks bids and asks outside US trading hours, so a snapshot is only
-useful when taken during the session (14:30-21:00 UK). The check below refuses
-to run outside it, and any chain where fewer than half the contracts have a
-two-sided quote (a holiday, or stale data) is skipped rather than saved.
-``scripts/register-daily-collection.ps1`` schedules this on weekdays.
+useful when taken during the regular session (14:45-20:55 UK). Outside it the
+collector does nothing unless forced, and even then nothing is saved: every
+chain must pass :func:`bsnn.market_data.snapshot_problem` (taken in the session,
+mostly quoted) to be kept. ``scripts/register-daily-collection.ps1`` schedules
+this on weekdays.
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -24,15 +24,7 @@ import pandas as pd
 from bsnn import market_data, paths
 from bsnn.instruments import option_sources
 
-SESSION_START, SESSION_END = dt.time(9, 45), dt.time(15, 55)  # New York time, avoiding the open and close
-
 log = logging.getLogger("bsnn.collect")
-
-
-def us_session_open(now: pd.Timestamp | None = None) -> bool:
-    """True on a weekday between 09:45 and 15:55 New York time."""
-    now = (now if now is not None else pd.Timestamp.now(tz="UTC")).tz_convert(market_data.MARKET_TZ)
-    return now.weekday() < 5 and SESSION_START <= now.time() <= SESSION_END
 
 
 def collect(tickers: list[str], directory: Path | None = None,
@@ -42,11 +34,12 @@ def collect(tickers: list[str], directory: Path | None = None,
     for ticker in tickers:
         try:
             chain = fetch(ticker, save=False)
-            share = market_data.live_quote_share(chain)
-            if share < market_data.MIN_LIVE_SHARE:
-                outcomes[ticker] = f"skipped: only {share:.0%} of {len(chain)} contracts had a live quote"
+            problem = market_data.snapshot_problem(chain)
+            if problem:
+                outcomes[ticker] = f"skipped: {problem}"
                 continue
             path = market_data.save_option_snapshot(chain, directory)
+            share = market_data.live_quote_share(chain)
             outcomes[ticker] = f"saved {len(chain):,} contracts ({share:.0%} quoted) to {path.name}"
         except Exception as exc:
             outcomes[ticker] = f"failed: {exc}"
@@ -61,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     handlers = _start_logging()
     try:
-        if not args.force and not us_session_open():
+        if not args.force and not market_data.us_session_open():
             log.info("US options market is closed; nothing collected. Use --force to override.")
             return 0
         outcomes = collect([t.upper() for t in args.tickers] or option_sources())
