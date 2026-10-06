@@ -22,10 +22,18 @@ DEFAULT_MARKETS = ("NQ", "ES", "YM")
 SOURCES = ("etf", "index")  # which options to read first: QQQ/SPY/DIA, or NDX/SPX
 
 
-def futures_ratio(inst: instruments.Instrument, snapshot_time, spot: float) -> float:
-    """Futures price / option underlying price on the snapshot day (e.g. NQ / NDX)."""
+def futures_ratio(inst: instruments.Instrument, raw: pd.DataFrame) -> float:
+    """Futures price / option underlying price when the snapshot was taken (e.g. NQ / QQQ).
+
+    Uses the futures price recorded with the snapshot. Older snapshots don't have
+    one, so they fall back to the futures' daily close, which is taken at a
+    different time from the underlying's price and so is only approximate.
+    """
+    spot = float(raw["underlyingPrice"].iloc[0])
+    if "futuresPrice" in raw and np.isfinite(raw["futuresPrice"].iloc[0]):
+        return float(raw["futuresPrice"].iloc[0]) / spot
     history = market_data.get_history(inst.price_ticker, refresh=True)
-    return market_data.unadjusted_close(history, snapshot_time) / spot
+    return market_data.unadjusted_close(history, raw["snapshotTime"].iloc[0]) / spot
 
 
 def option_sources(inst: instruments.Instrument, prefer: str = "etf") -> list[str]:
@@ -57,7 +65,7 @@ def latest_snapshot(ticker: str, before=None, directory: Path | None = None) -> 
 class MarketLevels:
     symbol: str  # the futures, e.g. NQ
     source: str  # the option underlying the levels came from, e.g. ^NDX
-    snapshot_date: pd.Timestamp
+    snapshot_time: pd.Timestamp  # New York time
     spot: float  # option underlying at the snapshot
     ratio: float  # futures / underlying on the snapshot day; NaN if unknown
     net_gamma: float  # $ per 1% move
@@ -78,15 +86,14 @@ def compute_levels(symbol: str, raw: pd.DataFrame) -> MarketLevels | None:
     day = analytics.one_day_move(analytics.implied_moves(dataset))
     gamma = analytics.gamma_levels(dataset)
     inst = instruments.resolve(symbol)
-    spot = float(dataset["S"].iloc[0])
-    snapshot_time = raw["snapshotTime"].iloc[0]
     try:
-        ratio = futures_ratio(inst, snapshot_time, spot) if inst else np.nan
+        ratio = futures_ratio(inst, raw) if inst else np.nan
     except Exception:
         ratio = np.nan
     return MarketLevels(
-        symbol=symbol, source=raw["ticker"].iloc[0], snapshot_date=market_data.market_date(snapshot_time),
-        spot=spot, ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
+        symbol=symbol, source=raw["ticker"].iloc[0],
+        snapshot_time=pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ),
+        spot=float(dataset["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan)
 
 

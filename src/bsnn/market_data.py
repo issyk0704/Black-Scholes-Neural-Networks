@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from bsnn import paths
+from bsnn import instruments, paths
 
 log = logging.getLogger(__name__)
 
@@ -373,6 +373,13 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     history = clean_history(tk.history(period="1y", auto_adjust=False))
     chain = enrich_snapshot(pd.concat(frames, ignore_index=True), ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
+    futures = instruments.futures_for(ticker)
+    if futures is not None:
+        # Taken straight after the spot price, so levels convert to futures at a matching ratio.
+        try:
+            chain["futuresPrice"] = latest_price(futures.price_ticker)
+        except Exception:
+            log.warning("Couldn't fetch %s alongside %s", futures.price_ticker, ticker, exc_info=True)
     if save and snapshot_problem(chain) is None:
         save_option_snapshot(chain, directory)
     return chain

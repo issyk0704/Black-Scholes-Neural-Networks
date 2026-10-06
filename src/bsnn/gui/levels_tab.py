@@ -58,7 +58,7 @@ def load_levels(ticker: str, path: Path | None = None, progress=None) -> LevelsD
     data.futures = instruments.futures_for(ticker)
     if data.futures:
         try:
-            data.futures_ratio = futures_ratio(data.futures, data.snapshot_time, float(data.dataset["S"].iloc[0]))
+            data.futures_ratio = futures_ratio(data.futures, raw)
         except Exception:
             data.notes.append(f"Couldn't load {data.futures.price_ticker} to convert levels to futures points.")
     return data
