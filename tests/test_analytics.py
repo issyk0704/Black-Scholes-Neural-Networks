@@ -65,6 +65,14 @@ def test_gamma_levels_find_walls_and_flip(flat):
     assert curve[0] < 0 < curve[-1]
 
 
+def test_walls_sit_above_and_below_spot(flat):
+    # Heavy open interest at the money (100) would dominate gamma; the walls must skip it.
+    oi = np.where(flat["K"] == 100, 50_000.0, 1000.0)
+    levels = analytics.gamma_levels(flat.assign(open_interest=oi))
+    assert levels["call_wall"] > 100 and levels["put_wall"] < 100
+    assert analytics.gamma_by_strike(flat.assign(open_interest=oi))["call"].idxmax() == 100
+
+
 def test_no_flip_when_gamma_never_changes_sign(flat):
     calls_only = flat.assign(open_interest=np.where(flat["is_call"] == 1, 1000.0, 0.0))
     levels = analytics.gamma_levels(calls_only)

@@ -18,8 +18,10 @@ That isn't always true, so the levels are a guide, not a fact:
 
 - positive net gamma: dealers sell rallies and buy dips, which damps moves;
 - negative net gamma: dealers chase the move, which amplifies it;
-- call wall / put wall: strikes with the most call / put gamma, often acting as
-  resistance / support;
+- call wall: the strike above spot with the most call gamma, often resistance;
+- put wall: the strike below spot with the most put gamma, often support.
+  (Gamma peaks at the money, so without the above/below rule the "wall" tends to
+  be the at-the-money strike, i.e. wherever price happened to be.)
 - gamma flip: the price at which net gamma changes sign.
 """
 
@@ -105,11 +107,13 @@ def gamma_levels(df: pd.DataFrame, width: float = 0.15, points: int = 301) -> di
     by_strike = gamma_by_strike(df)
     spots = spot * np.linspace(1 - width, 1 + width, points)
     curve = gamma_curve(df, spots)
+    calls_above = by_strike.loc[by_strike.index > spot, "call"]
+    puts_below = by_strike.loc[by_strike.index < spot, "put"]
     return {
         "spot": spot,
         "net": float(by_strike["net"].sum()),
-        "call_wall": float(by_strike["call"].idxmax()) if by_strike["call"].max() > 0 else np.nan,
-        "put_wall": float(by_strike["put"].idxmin()) if by_strike["put"].min() < 0 else np.nan,
+        "call_wall": float(calls_above.idxmax()) if len(calls_above) and calls_above.max() > 0 else np.nan,
+        "put_wall": float(puts_below.idxmin()) if len(puts_below) and puts_below.min() < 0 else np.nan,
         "flip": _zero_crossing_nearest(spots, curve, spot),
         "curve": (spots, curve),
         "by_strike": by_strike,
