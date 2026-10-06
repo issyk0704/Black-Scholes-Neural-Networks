@@ -27,6 +27,7 @@ dev = ["pytest>=8", "pytest-qt>=4.4"]
 [project.scripts]
 bsnn = "bsnn.gui.app:main"
 bsnn-train = "bsnn.train_cli:main"
+bsnn-collect = "bsnn.collect_cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "bsnn.__version__" }

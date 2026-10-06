@@ -9,6 +9,12 @@ venv/
 # Trained models (rebuild with bsnn-train or the app)
 models/
 
+# Collected data stays local: ~2 MB a day compressed. The bundled seed snapshots are plain .csv.
+data/options/*.csv.gz
+data/collect.log
+# Price history is a download cache; only the original four seed files are tracked.
+data/stock/*
+
 # IDEs
 .idea/
 .vscode/
