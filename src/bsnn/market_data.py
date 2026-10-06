@@ -70,14 +70,45 @@ def clean_history(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def history_path(ticker: str, directory: Path | None = None) -> Path:
-    return Path(directory or paths.STOCK_DIR) / f"{ticker.upper()}_data.csv"
+    safe = ticker.upper().replace(":", "_")  # "FRED:DGS2" isn't a valid Windows file name
+    return Path(directory or paths.STOCK_DIR) / f"{safe}_data.csv"
+
+
+FRED_PREFIX = "FRED:"
+FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
+PERIOD_OFFSETS = {"mo": "months", "y": "years"}
+
+
+def _period_start(period: str) -> pd.Timestamp:
+    """'6mo' -> six months ago, '2y' -> two years ago."""
+    for suffix, unit in PERIOD_OFFSETS.items():
+        if period.endswith(suffix):
+            return pd.Timestamp.today().normalize() - pd.DateOffset(**{unit: int(period[:-len(suffix)])})
+    raise ValueError(f"Unsupported period {period!r}")
+
+
+def _fetch_fred(series: str, period: str, start) -> pd.DataFrame:
+    """A FRED series (e.g. DGS2, the 2-year Treasury yield) shaped like a Yahoo price history.
+
+    FRED publishes one value a day, a business day late, so Open/High/Low equal Close.
+    """
+    raw = pd.read_csv(FRED_URL.format(series=series), na_values=".").dropna()
+    values = raw.set_index(pd.to_datetime(raw.iloc[:, 0])).iloc[:, 1].astype(float)
+    values = values.loc[pd.Timestamp(start) if start else _period_start(period):]
+    return pd.DataFrame({"Open": values, "High": values, "Low": values, "Close": values, "Volume": 0.0})
 
 
 def fetch_history(ticker: str, period: str = DEFAULT_PERIOD, start=None, directory: Path | None = None,
                   save: bool = True) -> pd.DataFrame:
-    """Download daily price history from Yahoo. ``start`` overrides ``period``."""
-    tk = yf.Ticker(ticker)
-    raw = tk.history(start=start, auto_adjust=False) if start else tk.history(period=period, auto_adjust=False)
+    """Download daily history from Yahoo, or from FRED for a ``FRED:<series>`` ticker.
+
+    ``start`` overrides ``period``.
+    """
+    if ticker.upper().startswith(FRED_PREFIX):
+        raw = _fetch_fred(ticker[len(FRED_PREFIX):].upper(), period, start)
+    else:
+        tk = yf.Ticker(ticker)
+        raw = tk.history(start=start, auto_adjust=False) if start else tk.history(period=period, auto_adjust=False)
     if raw.empty:
         raise ValueError(f"No price history returned for {ticker!r}")
     df = clean_history(raw)
@@ -162,11 +193,43 @@ def risk_free_rate(asof=None) -> float:
         return DEFAULT_RATE
 
 
+def foreign_rate_from_futures(spot: float, futures_price: float, years_to_expiry: float,
+                              domestic_rate: float) -> float:
+    """Foreign interest rate implied by covered interest parity: F = S * exp((r_dom - r_for) * T)."""
+    if min(spot, futures_price, years_to_expiry) <= 0:
+        raise ValueError("Spot, futures price and time to expiry must be positive")
+    return domestic_rate - np.log(futures_price / spot) / years_to_expiry
+
+
+def implied_foreign_rate(spot: float, futures_ticker: str, domestic_rate: float) -> float:
+    """Foreign rate implied by Yahoo's front-month FX futures (e.g. 6E=F for EUR)."""
+    tk = yf.Ticker(futures_ticker)
+    expiry = pd.Timestamp(tk.info["expireDate"], unit="s", tz="UTC")
+    futures_price = float(clean_history(tk.history(period="5d"))["Close"].iloc[-1])
+    years = (expiry - pd.Timestamp.now(tz="UTC")).total_seconds() / (365 * 24 * 3600)
+    return foreign_rate_from_futures(spot, futures_price, years, domestic_rate)
+
+
 # --- Option chains -----------------------------------------------------------
 
 def option_snapshot_path(ticker: str, snapshot_time, directory: Path | None = None) -> Path:
+    """Where a snapshot is saved. New snapshots are gzipped (a full day is ~10 MB as plain CSV)."""
     day = market_date(snapshot_time)
-    return Path(directory or paths.OPTIONS_DIR) / f"{ticker.upper()}_options_{day:%Y-%m-%d}.csv"
+    return Path(directory or paths.OPTIONS_DIR) / f"{ticker.upper()}_options_{day:%Y-%m-%d}.csv.gz"
+
+
+def save_option_snapshot(chain: pd.DataFrame, directory: Path | None = None) -> Path:
+    first = chain.iloc[0]
+    path = option_snapshot_path(first["ticker"], first["snapshotTime"], directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    chain.to_csv(path, index=False)
+    return path
+
+
+def snapshot_label(path: Path) -> str:
+    """'SPY  2026-10-05' for SPY_options_2026-10-05.csv(.gz)."""
+    ticker, _, rest = Path(path).name.partition("_options_")
+    return f"{ticker}  {rest.split('.')[0]}"
 
 
 def enrich_snapshot(chain: pd.DataFrame, ticker: str, snapshot_time, *, spot: float,
@@ -216,14 +279,18 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     chain = enrich_snapshot(pd.concat(frames, ignore_index=True), ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
     if save:
-        path = option_snapshot_path(ticker, snapshot_time, directory)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        chain.to_csv(path, index=False)
+        save_option_snapshot(chain, directory)
     return chain
 
 
+def live_quote_share(chain: pd.DataFrame) -> float:
+    """Share of contracts with a two-sided quote. Yahoo blanks bids and asks outside US hours."""
+    return float(((chain["bid"] > 0) & (chain["ask"] > 0)).mean()) if len(chain) else 0.0
+
+
 def list_option_snapshots(directory: Path | None = None) -> list[Path]:
-    return sorted(Path(directory or paths.OPTIONS_DIR).glob("*_options_*.csv"))
+    """Saved snapshots (bundled .csv and collected .csv.gz), sorted by ticker then date."""
+    return sorted(Path(directory or paths.OPTIONS_DIR).glob("*_options_*.csv*"))
 
 
 def load_option_snapshots(files: Iterable[Path]) -> pd.DataFrame:

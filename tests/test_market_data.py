@@ -39,6 +39,17 @@ def test_history_round_trips_through_csv(tmp_path, history):
     pd.testing.assert_frame_equal(fetched, loaded, check_freq=False, check_dtype=False)
 
 
+def test_fred_series_become_price_histories(tmp_path, monkeypatch):
+    csv = "observation_date,DGS2\n2026-09-29,4.89\n2026-09-30,.\n2026-10-01,4.78\n2026-10-02,4.83\n"
+    monkeypatch.setattr(md, "FRED_URL", str(tmp_path / "{series}.csv"))
+    (tmp_path / "DGS2.csv").write_text(csv)
+    df = md.fetch_history("FRED:DGS2", start="2026-09-30", directory=tmp_path)
+    assert list(df.index.strftime("%Y-%m-%d")) == ["2026-10-01", "2026-10-02"]  # missing values dropped
+    assert df["Close"].tolist() == [4.78, 4.83] and (df["High"] == df["Close"]).all()
+    assert md.history_path("FRED:DGS2", tmp_path).name == "FRED_DGS2_data.csv"
+    assert md.load_history("FRED:DGS2", tmp_path)["Close"].tolist() == [4.78, 4.83]
+
+
 def test_get_history_falls_back_to_cache(tmp_path, history):
     history.to_csv(md.history_path("ABC", tmp_path))
     with patch.object(md.yf, "Ticker", side_effect=ConnectionError("offline")):
@@ -60,7 +71,7 @@ def test_enrich_snapshot_adds_market_inputs(history, chain):
     assert set(md.SNAPSHOT_COLUMNS) <= set(out.columns)
     assert (out["ticker"] == "ABC").all()
     assert out["histVol"].iloc[0] == pytest.approx(md.realized_vol(history["Close"]).iloc[220])
-    assert md.option_snapshot_path("abc", snapshot, "x").name == f"ABC_options_{history.index[220]:%Y-%m-%d}.csv"
+    assert md.option_snapshot_path("abc", snapshot, "x").name == f"ABC_options_{history.index[220]:%Y-%m-%d}.csv.gz"
 
 
 def test_load_option_snapshots_requires_market_inputs(tmp_path, chain):
@@ -71,6 +82,29 @@ def test_load_option_snapshots_requires_market_inputs(tmp_path, chain):
     with pytest.raises(ValueError, match="histVol"):
         md.load_option_snapshots([bad])
     assert md.list_option_snapshots(tmp_path) == [good, bad]
+
+
+def test_compressed_snapshots_round_trip(tmp_path, chain):
+    path = md.save_option_snapshot(chain, tmp_path)
+    assert path.name == "TEST_options_2026-01-05.csv.gz"
+    assert path.stat().st_size < len(chain.to_csv(index=False)) / 2
+    pd.testing.assert_frame_equal(md.load_option_snapshots(md.list_option_snapshots(tmp_path)), chain)
+    assert md.snapshot_label(path) == "TEST  2026-01-05"
+    assert md.snapshot_label(tmp_path / "SPY_options_2026-10-05.csv") == "SPY  2026-10-05"
+
+
+def test_live_quote_share(chain):
+    assert md.live_quote_share(chain) == 1.0
+    assert md.live_quote_share(chain.assign(bid=0.0)) == 0.0
+
+
+def test_foreign_rate_from_futures():
+    # EUR futures above spot means euro rates are below dollar rates.
+    rate = md.foreign_rate_from_futures(spot=1.1241, futures_price=1.1271, years_to_expiry=0.19, domestic_rate=0.04)
+    assert rate == pytest.approx(0.04 - np.log(1.1271 / 1.1241) / 0.19)
+    assert rate < 0.04
+    with pytest.raises(ValueError):
+        md.foreign_rate_from_futures(1.12, 1.13, 0.0, 0.04)
 
 
 def test_committed_snapshots_are_loadable():
