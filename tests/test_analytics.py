@@ -85,6 +85,22 @@ def test_zero_crossing_picks_nearest_root():
     assert analytics._zero_crossing_nearest(x, y, 6.0) == pytest.approx(2 * np.pi, abs=0.01)
 
 
+def test_front_expiry_prefers_today():
+    today = build_dataset(make_chain(expiries=("2026-01-05", "2026-01-16")), LOOSE)
+    front, is_today = analytics.front_expiry(today)
+    assert is_today and set(front["expiry"]) == {"2026-01-05"}
+    later = build_dataset(make_chain(expiries=("2026-01-09", "2026-01-16")), LOOSE)
+    front, is_today = analytics.front_expiry(later)
+    assert not is_today and set(front["expiry"]) == {"2026-01-09"}
+
+
+def test_volume_by_strike(flat):
+    one = flat[flat["expiry"] == flat["expiry"].min()]
+    volume = analytics.volume_by_strike(one)
+    assert volume["call"].idxmax() == 100 and volume["put"].idxmax() == 100
+    assert volume.loc[100, "call"] == one[(one["K"] == 100) & (one["is_call"] == 1)]["volume"].sum()
+
+
 def test_within_days(flat):
     assert analytics.within_days(flat, None) is flat
     assert (analytics.within_days(flat, 50)["time_to_expiry"] * 365 <= 50).all()

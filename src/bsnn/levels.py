@@ -17,7 +17,8 @@ from bsnn import analytics, instruments, market_data
 from bsnn.features import Filters, build_dataset
 
 # Every strike with a usable quote; gamma far from spot is tiny, so a wide range costs nothing.
-FILTERS = Filters(min_days=0.05, min_moneyness=0.5, max_moneyness=2.0, max_relative_spread=1.0, min_price=0.01)
+# min_days of 0.01 (about 15 minutes) keeps 0DTE contracts in until shortly before the close.
+FILTERS = Filters(min_days=0.01, min_moneyness=0.5, max_moneyness=2.0, max_relative_spread=1.0, min_price=0.01)
 DEFAULT_MARKETS = ("NQ", "ES", "YM")
 SOURCES = ("etf", "index")  # which options to read first: QQQ/SPY/DIA, or NDX/SPX
 
@@ -95,6 +96,63 @@ def compute_levels(symbol: str, raw: pd.DataFrame) -> MarketLevels | None:
         snapshot_time=pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ),
         spot=float(dataset["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan)
+
+
+@dataclass
+class ZeroDteLevels(MarketLevels):
+    """Levels from a single expiry, normally today's (0DTE), read from a live chain."""
+
+    expiry: str = ""
+    is_today: bool = True  # False when the market has no expiry today and the nearest one is used
+    straddle: float = np.nan  # at-the-money straddle: the expected move to the expiry, in underlying units
+    one_sigma: float = np.nan  # S * IV * sqrt(time left), in underlying units
+    top_calls: list[tuple[float, float]] | None = None  # (strike, contracts traded today), busiest first
+    top_puts: list[tuple[float, float]] | None = None
+
+
+def compute_zero_dte(symbol: str, raw: pd.DataFrame, top: int = 3) -> ZeroDteLevels | None:
+    """0DTE gamma levels, rest-of-day move and busiest strikes from a live chain."""
+    dataset = build_dataset(raw, FILTERS)
+    front, is_today = analytics.front_expiry(dataset)
+    if front.empty or front["open_interest"].sum() == 0:
+        return None
+    gamma = analytics.gamma_levels(front)
+    moves = analytics.implied_moves(front)
+    volume = analytics.volume_by_strike(front)
+    inst = instruments.resolve(symbol)
+    try:
+        ratio = futures_ratio(inst, raw) if inst else np.nan
+    except Exception:
+        ratio = np.nan
+    move = moves.iloc[0] if not moves.empty else None
+    return ZeroDteLevels(
+        symbol=symbol, source=raw["ticker"].iloc[0],
+        snapshot_time=pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ),
+        spot=float(front["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"],
+        call_wall=gamma["call_wall"], put_wall=gamma["put_wall"],
+        one_day_move_pct=move["move_pct"] if move is not None else np.nan,
+        expiry=str(front["expiry"].iloc[0]), is_today=is_today,
+        straddle=move["straddle"] if move is not None else np.nan,
+        one_sigma=move["move"] if move is not None else np.nan,
+        top_calls=[(k, v) for k, v in volume["call"].nlargest(top).items() if v > 0],
+        top_puts=[(k, v) for k, v in volume["put"].nlargest(top).items() if v > 0])
+
+
+def live_zero_dte(symbol: str, prefer: str = "etf") -> ZeroDteLevels | None:
+    """Fetch a live chain now and return its 0DTE levels; None if no source has usable quotes.
+
+    The chain isn't saved: intraday reads would only overwrite the day's snapshot.
+    """
+    inst = instruments.resolve(symbol)
+    if inst is None:
+        raise ValueError(f"{symbol} isn't on the watchlist")
+    for source in option_sources(inst, prefer):
+        raw = market_data.fetch_option_chain(source, save=False)
+        if market_data.snapshot_problem(raw) is None:
+            levels = compute_zero_dte(symbol, raw)
+            if levels is not None:
+                return levels
+    return None
 
 
 def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: str = "etf") -> MarketLevels | None:

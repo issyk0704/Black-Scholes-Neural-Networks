@@ -33,7 +33,8 @@ def make_chain(snapshot="2026-01-05T15:00:00+00:00", spot=100.0, ticker="TEST",
                 mid = pricing.price(spot, K, T, rate, vol, q, kind == "Call")
                 rows.append({"contractSymbol": f"{ticker}{expiry}{kind[0]}{K}", "strike": K,
                              "bid": mid * 0.98, "ask": mid * 1.02, "lastPrice": mid, "impliedVolatility": vol,
-                             "openInterest": 1000.0, "OptionType": kind, "ExpiryDate": expiry})
+                             "openInterest": 1000.0, "volume": float(1000 - abs(K - spot) * 10),
+                             "OptionType": kind, "ExpiryDate": expiry})
     return pd.DataFrame(rows).assign(ticker=ticker, snapshotTime=snapshot, underlyingPrice=spot,
                                      riskFreeRate=rate, dividendYield=q, histVol=hist_vol)
 

@@ -88,6 +88,7 @@ def build_dataset(chains: pd.DataFrame, filters: Filters = Filters()) -> pd.Data
         "hist_vol": chains["histVol"].to_numpy(dtype=float),
         "is_call": (chains["OptionType"] == "Call").to_numpy(dtype=float),
         "open_interest": chains["openInterest"].fillna(0).to_numpy(dtype=float) if "openInterest" in chains else 0.0,
+        "volume": chains["volume"].fillna(0).to_numpy(dtype=float) if "volume" in chains else 0.0,
     })
 
     days = df["time_to_expiry"] * 365

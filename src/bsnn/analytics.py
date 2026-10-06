@@ -30,7 +30,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from bsnn import pricing
+from bsnn import market_data, pricing
 
 TRADING_DAYS = 252
 CONTRACT_SIZE = 100  # shares (or index units) per contract
@@ -85,6 +85,32 @@ def _gex(df: pd.DataFrame, spot) -> np.ndarray:
 
 def within_days(df: pd.DataFrame, max_days: float | None) -> pd.DataFrame:
     return df if max_days is None else df[df["time_to_expiry"] * 365 <= max_days]
+
+
+def front_expiry(df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    """The contracts expiring today (0DTE), or the nearest expiry if none do.
+
+    Returns (contracts, True if they expire on the snapshot day).
+    """
+    if df.empty:
+        return df, False
+    snapshot_day = market_data.market_date(df["snapshot"].iloc[0])
+    expiries = pd.to_datetime(df["expiry"])
+    today = df[expiries == snapshot_day]
+    if not today.empty:
+        return today, True
+    return df[expiries == expiries.min()], False
+
+
+def volume_by_strike(df: pd.DataFrame) -> pd.DataFrame:
+    """Contracts traded so far in the session, calls and puts, at each strike.
+
+    Shows where activity is concentrated; it can't say whether trades opened or
+    closed positions, or who was buying.
+    """
+    calls = df[df["is_call"] == 1].groupby("K")["volume"].sum()
+    puts = df[df["is_call"] == 0].groupby("K")["volume"].sum()
+    return pd.concat({"call": calls, "put": puts}, axis=1).fillna(0.0).sort_index()
 
 
 def gamma_by_strike(df: pd.DataFrame) -> pd.DataFrame:
