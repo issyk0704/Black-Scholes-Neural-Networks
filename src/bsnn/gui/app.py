@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from PyQt6.QtGui import QCursor, QGuiApplication
 from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from bsnn import __version__, paths
@@ -55,13 +56,29 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Neural network: {pricer.description}" if pricer else "No model loaded.")
 
 
+def place_on_current_screen(window: QMainWindow) -> None:
+    """Centre the window on the screen the mouse is on, shrunk to fit if that screen is small.
+
+    Left to itself, Windows can open the window on another monitor, out of sight.
+    """
+    screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+    area = screen.availableGeometry()
+    window.resize(min(window.width(), area.width() - 40), min(window.height(), area.height() - 40))
+    frame = window.frameGeometry()
+    frame.moveCenter(area.center())
+    window.move(frame.topLeft())
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("Black-Scholes & Neural Networks")
     window = MainWindow()
+    place_on_current_screen(window)
     window.show()
+    window.raise_()
+    window.activateWindow()
     sys.exit(app.exec())
 
 

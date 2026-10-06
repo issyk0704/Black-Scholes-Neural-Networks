@@ -5,7 +5,9 @@ pytest.importorskip("pytestqt")
 
 from bsnn import pricing  # noqa: E402
 from bsnn.gui import model_tab  # noqa: E402
-from bsnn.gui.app import MainWindow  # noqa: E402
+from PyQt6.QtGui import QGuiApplication  # noqa: E402
+
+from bsnn.gui.app import MainWindow, place_on_current_screen  # noqa: E402
 from bsnn.gui.common import ticker_of  # noqa: E402
 from bsnn.gui.levels_tab import load_levels  # noqa: E402
 from bsnn.gui.market_tab import MarketData  # noqa: E402
@@ -40,6 +42,13 @@ def set_contract(tab, S=100, K=100, days=365, r=5, q=0, vol=20):
     for box, value in ((tab.spot, S), (tab.strike, K), (tab.days, days), (tab.rate, r), (tab.carry, q),
                        (tab.vol, vol)):
         box.setValue(value)
+
+
+def test_window_opens_inside_the_current_screen(window):
+    place_on_current_screen(window)
+    screen = QGuiApplication.screenAt(window.frameGeometry().center()) or QGuiApplication.primaryScreen()
+    assert screen.availableGeometry().contains(window.frameGeometry().center())
+    assert window.width() <= screen.availableGeometry().width()
 
 
 def test_pricer_recalculates_as_inputs_change(window):
