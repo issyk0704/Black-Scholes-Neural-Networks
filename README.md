@@ -72,6 +72,24 @@ are where most index gamma sits, and they are European-style, which suits the mo
 converted to futures points using the futures/underlying price ratio on the snapshot day. Open
 interest is only published during and after the US session, so fetch chains after 14:30 UK.
 
+### Posting the levels to Discord
+
+`bsnn-levels` turns the newest saved snapshot from before today into one Discord card per market
+(NQ from QQQ, ES from SPY, YM from DIA by default). Each card shows the gamma regime, the gamma flip,
+call wall and put wall in futures points, and the one-day implied move as a range around the current
+futures price. Open interest only updates once a day, so the previous session's data is the most
+current there is before the open.
+
+```powershell
+.\.venv\Scripts\bsnn-levels.exe                        # print the message as JSON; nothing is sent
+$env:DISCORD_WEBHOOK_URL = "<your webhook URL>"        # the channel's webhook (keep it secret)
+.\.venv\Scripts\bsnn-levels.exe --post                 # send it
+.\.venv\Scripts\bsnn-levels.exe --post --source index  # use NDX/SPX options instead of QQQ/SPY
+```
+
+In the cloud, a workflow in the private data repository posts the levels each weekday at about
+09:15 New York time, reading the webhook URL from a GitHub Actions secret.
+
 ### Daily data collection
 
 Option quotes on Yahoo are only live during US trading hours (14:30–21:00 UK). `bsnn-collect`
