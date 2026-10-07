@@ -95,7 +95,9 @@ can't be seen in free data.
 
 In the cloud, workflows in the private data repository post each weekday (New York time):
 the previous session's levels at **09:15**, and 0DTE updates at **09:45, 10:45, 13:30 and
-14:45**. They read the webhook URL from a GitHub Actions secret.
+14:45**. They read the webhook URL from a GitHub Actions secret. GitHub's own schedules can start
+hours late, so a free [cron-job.org](https://cron-job.org) account starts the workflows on time
+through GitHub's API; `.\scripts\register-cron-jobs.ps1` creates those jobs.
 
 The **Moves & gamma** tab has the same 0DTE view ("Gamma from: 0DTE"), a volume-by-strike chart,
 and a 15-minute auto-refresh during US hours.
@@ -257,7 +259,7 @@ data/
   stock/           2-year daily price history per ticker
   options/         option-chain snapshots: bundled seed set (.csv) and collected (.csv.gz, not in git)
 tests/             pytest suite, including GUI tests via pytest-qt
-scripts/           daily-collection scheduler and the screenshot generator for this README
+scripts/           daily-collection scheduler, cron-job.org setup, and the README screenshot generator
 ```
 
 ## Limitations
