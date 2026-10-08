@@ -7,9 +7,9 @@
     bsnn-levels --markets NQ ES
     bsnn-levels --source index          # read NDX / SPX options instead of QQQ / SPY (DIA stays for YM)
 
-Daily levels use the newest saved snapshot from before today: open interest only
-updates once a day, so the previous session's data is the most current before
-the open. 0DTE levels read live chains, so they move with price and time left,
+Daily levels use the newest saved snapshot from before today for prices and vols,
+with this morning's open interest, which is published overnight and so includes
+the previous session's full trading. 0DTE levels read live chains, so they move with price and time left,
 but they still rest on this morning's open interest.
 
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
@@ -136,10 +136,16 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
                      f"{live_price + points:,.0f}**")
         fields.append({"name": "1-day implied move (1σ)", "value": move, "inline": False})
     taken, source = levels.snapshot_time, levels.source.lstrip("^")
+    description = (f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({_price_then(levels)} "
+                   f"then). Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+    if levels.open_interest_time is not None:
+        oi = levels.open_interest_time
+        description = (f"Open interest as of {oi:%H:%M} New York, {oi:%a %d %b} (includes {taken:%a}'s full session); "
+                       f"prices and vols from {source} options at {taken:%H:%M} New York, {taken:%a %d %b} "
+                       f"({_price_then(levels)} then). Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
     return {
         "title": f"{levels.symbol} options levels",
-        "description": f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({_price_then(levels)} "
-                       f"then). Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.",
+        "description": description,
         "color": POSITIVE if levels.net_gamma > 0 else NEGATIVE,
         "fields": fields,
     }
@@ -234,7 +240,8 @@ def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | No
     found, missing = [], []
     for symbol in markets:
         try:
-            levels = live_zero_dte(symbol, source) if zero_dte else levels_for(symbol, before=before, prefer=source)
+            levels = (live_zero_dte(symbol, source) if zero_dte
+                      else levels_for(symbol, before=before, prefer=source, refresh_oi=True))
         except Exception as exc:
             print(f"{symbol}: {exc}", file=sys.stderr)
             levels = None

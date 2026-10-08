@@ -77,8 +77,10 @@ interest is only published during and after the US session, so fetch chains afte
 `bsnn-levels` turns the newest saved snapshot from before today into one Discord card per market
 (NQ from QQQ, ES from SPY, YM from DIA by default). Each card shows the gamma regime, the gamma flip,
 call wall and put wall in futures points, and the one-day implied move as a range around the current
-futures price. Open interest only updates once a day, so the previous session's data is the most
-current there is before the open.
+futures price. Open interest is published overnight, so a snapshot taken during a session still
+carries the day before's. The card therefore fetches this morning's open interest (which includes
+the previous session's full trading) and combines it with the snapshot's prices and vols, the last
+reliable quotes before the open. If the morning's figures aren't out yet, it keeps the snapshot's.
 
 ```powershell
 .\.venv\Scripts\bsnn-levels.exe                        # print the message as JSON; nothing is sent

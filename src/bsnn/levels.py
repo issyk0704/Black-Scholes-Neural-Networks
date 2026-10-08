@@ -1,8 +1,8 @@
 """Daily gamma levels and implied moves for the futures we trade, from saved option snapshots.
 
 Shared by the Moves & gamma tab and ``bsnn-levels``, which posts them to Discord.
-Levels come from a whole session's snapshot: open interest only updates once a
-day, so the previous session's chain is the most current one before the open.
+Levels come from the previous session's snapshot. Open interest is published
+overnight, so the daily post swaps in the morning's (see refresh_open_interest).
 """
 
 from __future__ import annotations
@@ -75,12 +75,37 @@ class MarketLevels:
     call_wall: float
     put_wall: float
     one_day_move_pct: float
+    open_interest_time: pd.Timestamp | None = None  # New York; set when newer open interest replaced the snapshot's
 
     def in_futures(self, level: float) -> float:
         return level * self.ratio
 
 
-def compute_levels(symbol: str, raw: pd.DataFrame) -> MarketLevels | None:
+MIN_OI_CHANGED = 0.10  # below this share of changed contracts, the newer chain hasn't had its overnight update
+
+
+def refresh_open_interest(raw: pd.DataFrame, newer: pd.DataFrame) -> tuple[pd.DataFrame, pd.Timestamp | None]:
+    """Replace a saved chain's open interest with a newer chain's.
+
+    Open interest is published overnight, so the morning after a snapshot the chain
+    carries that session's full positioning, while its quotes are still blank before
+    the open. Contracts that have expired since the snapshot drop out. If the newer
+    chain hasn't been updated yet, the snapshot comes back unchanged with None.
+    """
+    if newer.empty:
+        return raw, None
+    latest = newer.drop_duplicates("contractSymbol").set_index("contractSymbol")["openInterest"]
+    kept = raw[raw["contractSymbol"].isin(latest.index)].copy()
+    if kept.empty:
+        return raw, None
+    fresh = kept["contractSymbol"].map(latest).fillna(0.0)
+    if (fresh != kept["openInterest"].fillna(0.0)).mean() < MIN_OI_CHANGED:
+        return raw, None
+    kept["openInterest"] = fresh
+    return kept, pd.Timestamp(newer["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
+
+
+def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timestamp | None = None) -> MarketLevels | None:
     """Levels from one saved chain, or None if it has no usable quotes or open interest."""
     dataset = build_dataset(raw, FILTERS)
     if dataset.empty or dataset["open_interest"].sum() == 0:
@@ -96,7 +121,8 @@ def compute_levels(symbol: str, raw: pd.DataFrame) -> MarketLevels | None:
         symbol=symbol, source=raw["ticker"].iloc[0],
         snapshot_time=pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ),
         spot=float(dataset["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
-        put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan)
+        put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan,
+        open_interest_time=open_interest_time)
 
 
 @dataclass
@@ -159,15 +185,28 @@ def live_zero_dte(symbol: str, prefer: str = "etf") -> ZeroDteLevels | None:
     return None
 
 
-def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: str = "etf") -> MarketLevels | None:
-    """Levels for a watchlist market from its newest usable snapshot (see :func:`option_sources`)."""
+def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: str = "etf",
+               refresh_oi: bool = False) -> MarketLevels | None:
+    """Levels for a watchlist market from its newest usable snapshot (see :func:`option_sources`).
+
+    With ``refresh_oi``, today's open interest is fetched live and replaces the
+    snapshot's (see :func:`refresh_open_interest`); prices and vols stay the snapshot's.
+    """
     inst = instruments.resolve(symbol)
     if inst is None:
         raise ValueError(f"{symbol} isn't on the watchlist")
     for source in option_sources(inst, prefer):
         path = latest_snapshot(source, before, directory)
         if path is not None:
-            levels = compute_levels(symbol, market_data.load_option_snapshots([path]))
+            raw, oi_time = market_data.load_option_snapshots([path]), None
+            if refresh_oi:
+                try:
+                    raw, oi_time = refresh_open_interest(raw, market_data.fetch_option_chain(source, save=False))
+                    if oi_time is None:
+                        print(f"{symbol}: {source} open interest not updated yet; using the snapshot's", file=sys.stderr)
+                except Exception as exc:
+                    print(f"{symbol}: kept the snapshot's open interest ({source} fetch failed: {exc})", file=sys.stderr)
+            levels = compute_levels(symbol, raw, oi_time)
             if levels is not None:
                 return levels
     return None

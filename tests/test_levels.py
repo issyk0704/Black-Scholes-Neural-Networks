@@ -67,6 +67,50 @@ def test_futures_ratio_uses_price_recorded_with_snapshot():
         assert lv.futures_ratio(instruments.resolve("NQ"), raw) == pytest.approx(31_464.0 / 760.0)
 
 
+WEDNESDAY = "2026-10-07T18:30:00+00:00"  # 14:30 New York
+THURSDAY_MORNING = "2026-10-08T13:15:00+00:00"  # 09:15 New York, before the open
+
+
+def test_refresh_open_interest_takes_the_morning_chain():
+    saved = make_chain(ticker="QQQ", snapshot=WEDNESDAY, expiries=("2026-10-07", "2026-10-16"))
+    morning = make_chain(ticker="QQQ", snapshot=THURSDAY_MORNING, expiries=("2026-10-16",))
+    morning["openInterest"] = np.arange(len(morning), dtype=float)
+    raw, when = lv.refresh_open_interest(saved, morning)
+    assert set(raw["ExpiryDate"]) == {"2026-10-16"}  # Wednesday's expiry has gone
+    expected = morning.set_index("contractSymbol").loc[raw["contractSymbol"], "openInterest"]
+    assert (raw["openInterest"].to_numpy() == expected.to_numpy()).all()
+    assert (raw["bid"].to_numpy() == saved.loc[raw.index, "bid"].to_numpy()).all()  # quotes stay the snapshot's
+    assert when == pd.Timestamp("2026-10-08 09:15", tz="America/New_York")
+
+
+def test_refresh_open_interest_waits_for_the_overnight_update():
+    saved = make_chain(ticker="QQQ", snapshot=WEDNESDAY, expiries=("2026-10-16",))
+    morning = make_chain(ticker="QQQ", snapshot=THURSDAY_MORNING, expiries=("2026-10-16",))  # same open interest
+    raw, when = lv.refresh_open_interest(saved, morning)
+    assert raw is saved and when is None
+    assert lv.refresh_open_interest(saved, morning.iloc[0:0]) == (saved, None)
+
+
+def test_levels_for_refreshes_open_interest_when_asked(snapshots):
+    morning = make_chain(ticker="QQQ", snapshot=THURSDAY_MORNING, expiries=("2026-10-16", "2026-11-20"))
+    morning["openInterest"] = 5000.0
+    with patch.object(lv, "futures_ratio", return_value=41.5), \
+         patch.object(lv.market_data, "fetch_option_chain", return_value=morning) as fetch:
+        fresh = lv.levels_for("NQ", before="2026-10-08", directory=snapshots, refresh_oi=True)
+        plain = lv.levels_for("NQ", before="2026-10-08", directory=snapshots)
+    fetch.assert_called_once_with("QQQ", save=False)
+    assert fresh.open_interest_time == pd.Timestamp("2026-10-08 09:15", tz="America/New_York")
+    assert fresh.net_gamma == pytest.approx(plain.net_gamma * 5)  # same chain, five times the open interest
+    assert plain.open_interest_time is None
+
+
+def test_levels_for_keeps_the_snapshot_if_the_refresh_fails(snapshots):
+    with patch.object(lv, "futures_ratio", return_value=41.5), \
+         patch.object(lv.market_data, "fetch_option_chain", side_effect=ConnectionError("offline")):
+        levels = lv.levels_for("NQ", before="2026-10-08", directory=snapshots, refresh_oi=True)
+    assert levels is not None and levels.open_interest_time is None
+
+
 def test_levels_for_rejects_unknown_symbol():
     with pytest.raises(ValueError):
         lv.levels_for("AAPL")
@@ -100,6 +144,13 @@ def test_message_is_webhook_ready_json():
     assert "31,080 – 31,720" in fields["1-day implied move (1σ)"]
     assert "Range" not in str(es["fields"]) and "footer" in es  # no live price for ES; footer on the last card
     assert len(json.dumps(payload)) < 6000  # Discord's limit for a message's embeds
+
+
+def test_card_says_when_open_interest_was_refreshed():
+    morning = pd.Timestamp("2026-10-06 09:15", tz="America/New_York")
+    card = levels_cli.market_embed(sample_levels(open_interest_time=morning), None)
+    assert card["description"].startswith("Open interest as of 09:15 New York, Tue 06 Oct (includes Mon's full session)")
+    assert "prices and vols from NDX options at 14:30 New York, Mon 05 Oct" in card["description"]
 
 
 def test_card_without_ratio_shows_underlying_levels():
@@ -165,7 +216,7 @@ def test_record_post_keeps_today_only(tmp_path):
 
 def test_include_today_lifts_the_date_limit(monkeypatch):
     seen = []
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer: seen.append(before))
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: seen.append(before))
     levels_cli.main(["--markets", "NQ"])
     levels_cli.main(["--markets", "NQ", "--include-today"])
     assert seen[0] is not None and seen[1] is None
@@ -173,7 +224,7 @@ def test_include_today_lifts_the_date_limit(monkeypatch):
 
 def test_post_requires_webhook(monkeypatch, capsys):
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer: sample_levels(symbol=symbol))
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: sample_levels(symbol=symbol))
     monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
     assert levels_cli.main(["--markets", "NQ", "--post"]) == 1
     assert "DISCORD_WEBHOOK_URL" in capsys.readouterr().err
@@ -184,7 +235,7 @@ def fake_post(monkeypatch, tmp_path):
     sent = {}
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
     monkeypatch.setattr(levels_cli.paths, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer: sample_levels(symbol=symbol))
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: sample_levels(symbol=symbol))
     monkeypatch.setattr(levels_cli, "live_zero_dte", lambda symbol, prefer: sample_zero_dte(symbol=symbol))
     monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
     monkeypatch.setattr(levels_cli, "post", lambda url, payload: sent.update(url=url, payload=payload))
@@ -248,7 +299,7 @@ def test_zero_dte_gives_up_after_the_retries(monkeypatch):
 
 
 def test_daily_levels_do_not_retry(monkeypatch):
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer: None)
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: None)
     monkeypatch.setattr(levels_cli.time, "sleep", lambda s: pytest.fail("daily levels read files; waiting won't help"))
     assert levels_cli.gather_with_retries(["NQ"], False, "etf", None) == ([], ["NQ"])
 
