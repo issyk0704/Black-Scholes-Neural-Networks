@@ -7,6 +7,7 @@ day, so the previous session's chain is the most current one before the open.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -148,10 +149,13 @@ def live_zero_dte(symbol: str, prefer: str = "etf") -> ZeroDteLevels | None:
         raise ValueError(f"{symbol} isn't on the watchlist")
     for source in option_sources(inst, prefer):
         raw = market_data.fetch_option_chain(source, save=False)
-        if market_data.snapshot_problem(raw) is None:
+        problem = market_data.snapshot_problem(raw)
+        if problem is None:
             levels = compute_zero_dte(symbol, raw)
             if levels is not None:
                 return levels
+            problem = "no open interest in the front expiry"
+        print(f"{symbol}: {source} chain not used: {problem}", file=sys.stderr)
     return None
 
 
