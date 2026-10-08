@@ -140,13 +140,14 @@ def test_daily_slot(tmp_path, when, posted, expected):
 
 
 @pytest.mark.parametrize("when, posted, expected", [
-    ("2026-10-06 13:45", "", "0dte-09:45"),             # 09:45 New York in summer
-    ("2026-10-06 14:45", "2026-10-06 0dte-09:45", "0dte-10:45"),
-    ("2026-10-06 15:45", "", None),                     # 11:45: between slots
-    ("2026-10-06 18:45", "", "0dte-14:45"),
-    ("2026-12-08 14:45", "", "0dte-09:45"),             # 09:45 New York in winter
+    ("2026-10-06 14:00", "", "0dte-10:00"),             # 10:00 New York in summer
+    ("2026-10-06 15:30", "2026-10-06 0dte-10:00", "0dte-11:30"),
+    ("2026-10-06 16:30", "", None),                     # 12:30: between slots
+    ("2026-10-06 19:00", "", "0dte-15:00"),
+    ("2026-10-06 19:45", "", None),                     # 15:45: too close to the close
+    ("2026-12-08 15:00", "", "0dte-10:00"),             # 10:00 New York in winter
     ("2026-12-08 18:30", "", "0dte-13:30"),
-    ("2026-12-08 18:45", "2026-12-08 0dte-13:30", None),  # the summer-time run lands in the same slot
+    ("2026-12-08 18:45", "2026-12-08 0dte-13:30", None),  # a second run in the same slot
 ])
 def test_zero_dte_slots(tmp_path, when, posted, expected):
     marker = tmp_path / "levels_posted.txt"
@@ -159,7 +160,7 @@ def test_record_post_keeps_today_only(tmp_path):
     marker = tmp_path / "levels_posted.txt"
     marker.write_text("2026-10-05 daily\n2026-10-06 daily\n")
     levels_cli.record_post(marker, pd.Timestamp("2026-10-06").date(), levels_cli.ZERO_DTE_SLOTS[0].name)
-    assert marker.read_text() == "2026-10-06 0dte-09:45\n2026-10-06 daily\n"
+    assert marker.read_text() == "2026-10-06 0dte-10:00\n2026-10-06 daily\n"
 
 
 def test_include_today_lifts_the_date_limit(monkeypatch):
@@ -217,7 +218,7 @@ def test_scheduled_zero_dte_post_records_its_slot(fake_post, monkeypatch):
     monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.ZERO_DTE_SLOTS[1], ""))
     assert levels_cli.main(["--zero-dte", "--post", "--scheduled"]) == 0
     assert sent["payload"]["content"].startswith("**0DTE gamma update")
-    assert marker.read_text().strip().endswith("0dte-10:45")
+    assert marker.read_text().strip().endswith(levels_cli.ZERO_DTE_SLOTS[1].name)
 
 
 def test_zero_dte_retries_markets_without_quotes(monkeypatch):

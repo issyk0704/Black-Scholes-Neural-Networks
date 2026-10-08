@@ -48,11 +48,11 @@ class Slot:
 
 
 DAILY_SLOT = Slot("daily", dt.time(8, 30), dt.time(11, 0))  # scheduled for 09:15
-ZERO_DTE_SLOTS = (  # ICT session times
-    Slot("0dte-09:45", dt.time(9, 45), dt.time(10, 25)),   # after the open settles, before the 09:50 macro
-    Slot("0dte-10:45", dt.time(10, 45), dt.time(11, 25)),  # before the 10:50 macro and the end of the AM session
+ZERO_DTE_SLOTS = (
+    Slot("0dte-10:00", dt.time(10, 0), dt.time(10, 40)),   # once quotes have settled after the open
+    Slot("0dte-11:30", dt.time(11, 30), dt.time(12, 10)),  # late AM session, before lunch
     Slot("0dte-13:30", dt.time(13, 30), dt.time(14, 10)),  # start of the PM session
-    Slot("0dte-14:45", dt.time(14, 45), dt.time(15, 25)),  # before the last hour, when 0DTE gamma is strongest
+    Slot("0dte-15:00", dt.time(15, 0), dt.time(15, 40)),   # the last hour, when 0DTE gamma is strongest
 )
 
 
@@ -211,7 +211,7 @@ def post(webhook_url: str, payload: dict) -> None:
 
 # --- Command line ------------------------------------------------------------------
 
-ZERO_DTE_RETRIES = 3  # Yahoo's quotes lag the open, so a 09:45 read can be mostly blank
+ZERO_DTE_RETRIES = 3  # Yahoo's quotes lag the open, so a read soon after it can be mostly blank
 RETRY_WAIT_SECONDS = 120
 
 

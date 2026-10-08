@@ -94,8 +94,8 @@ the morning's open interest: positions opened today, and whether volume was buyi
 can't be seen in free data.
 
 In the cloud, workflows in the private data repository post each weekday (New York time):
-the previous session's levels at **09:15**, and 0DTE updates at **09:45, 10:45, 13:30 and
-14:45**. They read the webhook URL from a GitHub Actions secret. GitHub's own schedules can start
+the previous session's levels at **09:15**, and 0DTE updates at **10:00, 11:30, 13:30 and
+15:00**. They read the webhook URL from a GitHub Actions secret. GitHub's own schedules can start
 hours late, so a free [cron-job.org](https://cron-job.org) account starts the workflows on time
 through GitHub's API; `.\scripts\register-cron-jobs.ps1` creates those jobs.
 
