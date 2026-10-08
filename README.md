@@ -75,11 +75,22 @@ interest is only published during and after the US session, so fetch chains afte
 ### Posting the levels to Discord
 
 `bsnn-levels` turns the newest saved snapshot from before today into one Discord card per market
-(NQ from QQQ, ES from SPY, YM from DIA by default). Each card shows the gamma regime, the gamma flip,
-call wall and put wall in futures points, and the one-day implied move as a range around the current
-futures price. Open interest is published overnight, so a snapshot taken during a session still
-carries the day before's. The card therefore fetches this morning's open interest (which includes
-the previous session's full trading) and combines it with the snapshot's prices and vols, the last
+(NQ from QQQ, ES from SPY, YM from DIA by default). Each card has three columns, **today**, **this
+week** (to Friday) and **this month** (to its last weekday), and each column shows:
+
+- the gamma regime, gamma flip, call wall and put wall in futures points, from **only the options
+  expiring by the end of that column**. That is the positioning dealers must hedge before that
+  candle closes; longer-dated options belong to the later columns;
+- the one-standard-deviation move over the column's trading days, as a range around the current
+  futures price: the ATM vol of the expiry that spans the horizon × √(trading days ÷ 252). For
+  today it's the one-day move.
+
+When two columns end on the same day (today and this week on a Friday) they share one. Gamma
+levels describe the size and character of the moves dealers' hedging encourages, not their
+direction: read them alongside the higher-timeframe bias, not as signals.
+
+Open interest is published overnight, so a snapshot taken during a session still the day before's. The card therefore fetches this morning's open interest (which includes the
+previous session's full trading) and combines it with the snapshot's prices and vols, the last
 reliable quotes before the open. If the morning's figures aren't out yet, it keeps the snapshot's.
 
 ```powershell
@@ -89,17 +100,17 @@ $env:DISCORD_WEBHOOK_URL = "<your webhook URL>"        # the channel's webhook (
 .\.venv\Scripts\bsnn-levels.exe --post --source index  # use NDX/SPX options instead of QQQ/SPY
 ```
 
-`bsnn-levels --zero-dte` reads live chains instead and posts **0DTE** levels: gamma from today's
-expiry only (or the nearest one, for markets with no expiry today), the implied move to the close,
-and the busiest strikes by volume. These levels move with price and time left, but they rest on
+`bsnn-levels --zero-dte --post` reads live chains instead and posts **0DTE** levels by hand (they
+are no longer scheduled): gamma from today's expiry only (or the nearest one, for markets with no
+expiry today), the implied move to the close, and the busiest strikes by volume. These levels move with price and time left, but they rest on
 the morning's open interest: positions opened today, and whether volume was buying or selling,
 can't be seen in free data.
 
-In the cloud, workflows in the private data repository post each weekday (New York time):
-the previous session's levels at **09:15**, and 0DTE updates at **10:00, 11:30, 13:30 and
-15:00**. They read the webhook URL from a GitHub Actions secret. GitHub's own schedules can start
-hours late, so a free [cron-job.org](https://cron-job.org) account starts the workflows on time
-through GitHub's API; `.\scripts\register-cron-jobs.ps1` creates those jobs.
+In the cloud, a workflow in the private data repository posts the day, week and month levels
+each weekday at **09:15** New York time. It reads the webhook URL from a GitHub Actions secret.
+GitHub's own schedules can start hours late, so a free [cron-job.org](https://cron-job.org) account
+starts the workflows on time through GitHub's API; `.\scripts\register-cron-jobs.ps1` creates those
+jobs, and deletes the retired 0DTE ones.
 
 The **Moves & gamma** tab has the same 0DTE view ("Gamma from: 0DTE"), a volume-by-strike chart,
 and a 15-minute auto-refresh during US hours.

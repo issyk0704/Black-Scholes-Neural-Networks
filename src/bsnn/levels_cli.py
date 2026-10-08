@@ -1,16 +1,18 @@
 """Post gamma levels and implied moves for NQ, ES and YM to a Discord channel.
 
-    bsnn-levels                         # print the daily message as JSON (nothing is sent)
+    bsnn-levels                         # print the message as JSON (nothing is sent)
     bsnn-levels --post                  # send it to the webhook in DISCORD_WEBHOOK_URL
+    bsnn-levels --post --scheduled      # send only in the morning posting slot, once a day
     bsnn-levels --zero-dte              # today's 0DTE levels from live chains (US hours only)
-    bsnn-levels --post --scheduled      # send only if one of the posting slots below is due
     bsnn-levels --markets NQ ES
     bsnn-levels --source index          # read NDX / SPX options instead of QQQ / SPY (DIA stays for YM)
 
-Daily levels use the newest saved snapshot from before today for prices and vols,
-with this morning's open interest, which is published overnight and so includes
-the previous session's full trading. 0DTE levels read live chains, so they move with price and time left,
-but they still rest on this morning's open interest.
+The morning post gives each market's levels for today, this week and this month,
+each from the options expiring within that horizon. They use the newest saved
+snapshot from before today for prices and vols, with this morning's open interest,
+which is published overnight and so includes the previous session's full trading.
+0DTE levels read live chains, so they move with price and time left, but they
+still rest on this morning's open interest.
 
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
 Actions secret), never in a file.
@@ -32,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from bsnn import __version__, instruments, market_data, paths
-from bsnn.levels import DEFAULT_MARKETS, SOURCES, MarketLevels, ZeroDteLevels, levels_for, live_zero_dte
+from bsnn.levels import DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for, live_zero_dte
 
 POSITIVE, NEGATIVE = 0x2FA36B, 0xE0663A  # embed colours
 USER_AGENT = f"bsnn-levels/{__version__} (+https://github.com/issyk0704/Black-Scholes-Neural-Networks)"
@@ -48,12 +50,6 @@ class Slot:
 
 
 DAILY_SLOT = Slot("daily", dt.time(8, 30), dt.time(11, 0))  # scheduled for 09:15
-ZERO_DTE_SLOTS = (
-    Slot("0dte-10:00", dt.time(10, 0), dt.time(10, 40)),   # once quotes have settled after the open
-    Slot("0dte-11:30", dt.time(11, 30), dt.time(12, 10)),  # late AM session, before lunch
-    Slot("0dte-13:30", dt.time(13, 30), dt.time(14, 10)),  # start of the PM session
-    Slot("0dte-15:00", dt.time(15, 0), dt.time(15, 40)),   # the last hour, when 0DTE gamma is strongest
-)
 
 
 # --- When to post ----------------------------------------------------------------
@@ -125,24 +121,40 @@ def _gamma_fields(levels: MarketLevels, prefix: str = "") -> list[dict]:
     ]
 
 
-def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
-    """The daily card for a market: previous session's levels."""
-    fields = _gamma_fields(levels)
-    if np.isfinite(levels.one_day_move_pct):
-        move = f"±{levels.one_day_move_pct:.2%}"
+HORIZON_NAMES = {"day": "Today", "week": "This week", "month": "This month"}
+
+
+def _horizon_field(levels: MarketLevels, h: HorizonLevels, live_price: float | None) -> dict:
+    """One column of the card: a horizon's regime, gamma levels and 1σ range."""
+    name = " & ".join(HORIZON_NAMES[c] for c in h.covers)
+    if "day" not in h.covers:
+        name += f" (to {h.end:%a %d %b})"
+    lines = ["Positive gamma: damping" if h.net_gamma > 0 else "Negative gamma: amplifying",
+             f"Flip {_points(levels, h.flip)}", f"Call wall {_points(levels, h.call_wall)}",
+             f"Put wall {_points(levels, h.put_wall)}"]
+    if np.isfinite(h.move_pct):
         if live_price:
-            points = live_price * levels.one_day_move_pct
-            move += (f" ≈ ±{points:,.0f} pts\nFrom {live_price:,.0f}: **{live_price - points:,.0f} – "
-                     f"{live_price + points:,.0f}**")
-        fields.append({"name": "1-day implied move (1σ)", "value": move, "inline": False})
+            points = live_price * h.move_pct
+            lines.append(f"1σ **{live_price - points:,.0f} – {live_price + points:,.0f}** (±{points:,.0f})")
+        else:
+            lines.append(f"1σ ±{h.move_pct:.2%}")
+    if h.nearest_expiry:
+        lines.append(f"Nothing expires by then: uses {pd.Timestamp(h.nearest_expiry):%a %d %b}")
+    return {"name": name, "value": "\n".join(lines), "inline": True}
+
+
+def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
+    """The morning card for a market: levels for today, this week and this month, side by side."""
+    # Without horizons (nothing left to expire this month), fall back to every expiry's levels.
+    fields = [_horizon_field(levels, h, live_price) for h in levels.horizons] or _gamma_fields(levels)
     taken, source = levels.snapshot_time, levels.source.lstrip("^")
     description = (f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({_price_then(levels)} "
-                   f"then). Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+                   f"then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
     if levels.open_interest_time is not None:
         oi = levels.open_interest_time
         description = (f"Open interest as of {oi:%H:%M} New York, {oi:%a %d %b} (includes {taken:%a}'s full session); "
                        f"prices and vols from {source} options at {taken:%H:%M} New York, {taken:%a %d %b} "
-                       f"({_price_then(levels)} then). Net gamma {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+                       f"({_price_then(levels)} then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
     return {
         "title": f"{levels.symbol} options levels",
         "description": description,
@@ -185,9 +197,12 @@ def zero_dte_embed(levels: ZeroDteLevels, live_price: float | None) -> dict:
     }
 
 
-DAILY_FOOTER = ("Call wall: most call gamma above price then; put wall: most put gamma below. Converted to futures at "
-                "the futures/ETF price ratio when the options were read. Gamma assumes dealers are long customers' "
-                "calls and short their puts. Context, not signals.")
+DAILY_FOOTER = ("Each column uses only the options expiring by its end. Positive gamma: dealers tend to sell rallies "
+                "and buy dips; negative: they chase moves. Call wall: most call gamma above price then; put wall: "
+                "most put gamma below. 1σ: the move priced to the column's end, around the current futures price "
+                "(about 68% of closes land inside). Converted to futures at the futures/ETF price ratio when the "
+                "options were read. Gamma assumes dealers are long customers' calls and short their puts. "
+                "Context, not signals.")
 ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live prices, so they move with price and time "
                    "left, but can't see positions opened today. Busiest strikes show volume, not direction. "
                    "Context, not signals.")
@@ -260,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--zero-dte", action="store_true", help="today's 0DTE levels from live chains (US hours)")
     parser.add_argument("--post", action="store_true", help="send to the webhook in DISCORD_WEBHOOK_URL")
     parser.add_argument("--scheduled", "--at-open", dest="scheduled", action="store_true",
-                        help="only send if a posting slot is due, and only once per slot")
+                        help="only send in the morning posting slot, and only once a day")
     parser.add_argument("--include-today", action="store_true",
                         help="daily levels: also use today's snapshot (for testing after the close)")
     args = parser.parse_args(argv)
@@ -269,8 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     today = now.tz_convert(market_data.MARKET_TZ).date()
     marker = paths.DATA_DIR / "levels_posted.txt"
     slot = None
+    if args.scheduled and args.zero_dte:
+        parser.error("0DTE updates aren't scheduled any more; post them by hand without --scheduled")
     if args.scheduled:
-        slot, reason = due_slot(now, ZERO_DTE_SLOTS if args.zero_dte else (DAILY_SLOT,), marker)
+        slot, reason = due_slot(now, (DAILY_SLOT,), marker)
         if slot is None:
             print(f"Not posting: {reason}.")
             return 0

@@ -74,6 +74,24 @@ def one_day_move(moves: pd.DataFrame, min_days: float = 1.0) -> dict | None:
             "low": row["spot"] - move, "high": row["spot"] + move}
 
 
+def horizon_move(moves: pd.DataFrame, last_expiry, trading_days: int, min_days: float = 1.0) -> dict | None:
+    """The move priced over ``trading_days`` sessions, e.g. to the end of the week or month.
+
+    Takes the ATM vol of the last expiry on or before ``last_expiry`` (the one that
+    spans the horizon), or the nearest expiry if none falls inside it, and scales
+    it by sqrt(trading_days / 252). Expiries under ``min_days`` away are skipped, as
+    in :func:`one_day_move`, which this matches for one trading day.
+    """
+    eligible = moves[moves["days"] >= min_days]
+    if eligible.empty:
+        return None
+    inside = eligible[pd.to_datetime(eligible["expiry"]) <= pd.Timestamp(last_expiry)]
+    row = inside.iloc[-1] if not inside.empty else eligible.iloc[0]
+    move = row["spot"] * row["atm_iv"] * np.sqrt(trading_days / TRADING_DAYS)
+    return {"expiry": row["expiry"], "atm_iv": row["atm_iv"], "move": move, "move_pct": move / row["spot"],
+            "low": row["spot"] - move, "high": row["spot"] + move}
+
+
 def _gex(df: pd.DataFrame, spot) -> np.ndarray:
     """Signed dollar gamma per 1% move for each contract, if the underlying were at ``spot``."""
     gamma = np.asarray(pricing.greeks(spot, df["K"].to_numpy(), df["time_to_expiry"].to_numpy(),
@@ -85,6 +103,20 @@ def _gex(df: pd.DataFrame, spot) -> np.ndarray:
 
 def within_days(df: pd.DataFrame, max_days: float | None) -> pd.DataFrame:
     return df if max_days is None else df[df["time_to_expiry"] * 365 <= max_days]
+
+
+def expiring_between(df: pd.DataFrame, first, last) -> tuple[pd.DataFrame, bool]:
+    """The contracts expiring from ``first`` to ``last`` (dates, inclusive), or the nearest
+    expiry after ``first`` if none do.
+
+    Returns (contracts, True if they expire inside the window).
+    """
+    expiries = pd.to_datetime(df["expiry"])
+    later = df[expiries >= pd.Timestamp(first)]
+    inside = later[pd.to_datetime(later["expiry"]) <= pd.Timestamp(last)]
+    if not inside.empty or later.empty:
+        return inside, True
+    return later[later["expiry"] == later["expiry"].min()], False
 
 
 def front_expiry(df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:

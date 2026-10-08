@@ -9,7 +9,7 @@
 #   2. A cron-job.org API key: cron-job.org > Settings > API.
 #
 # Run from the repository root:   .\scripts\register-cron-jobs.ps1
-# Running it again skips jobs that already exist (matched by title).
+# Running it again skips jobs that already exist (matched by title) and deletes retired ones.
 
 $ErrorActionPreference = "Stop"
 $repo = "issyk0704/bsnn-data"
@@ -17,8 +17,6 @@ $weekdays = @(1, 2, 3, 4, 5)  # cron-job.org counts 0 = Sunday
 
 $jobs = @(
     @{ Title = "BSNN daily levels"; Workflow = "levels.yml";   Hours = @(9);      Minutes = @(15); Inputs = @{ post_now = $false } }
-    @{ Title = "BSNN 0DTE :00";     Workflow = "zero-dte.yml"; Hours = @(10, 15); Minutes = @(0);  Inputs = @{ post_now = $false } }
-    @{ Title = "BSNN 0DTE :30";     Workflow = "zero-dte.yml"; Hours = @(11, 13); Minutes = @(30); Inputs = @{ post_now = $false } }
     @{ Title = "BSNN collect";      Workflow = "collect.yml";  Hours = @(16);     Minutes = @(30); Inputs = @{ force = $false } }
 )
 
@@ -26,7 +24,17 @@ $githubToken = Read-Host "GitHub token (bsnn-data, Actions read/write)" -AsSecur
 $cronKey = Read-Host "cron-job.org API key" -AsSecureString | ConvertFrom-SecureString -AsPlainText
 $api = @{ Authorization = "Bearer $cronKey" }
 
-$existing = (Invoke-RestMethod "https://api.cron-job.org/jobs" -Headers $api).jobs.title
+# Jobs from earlier schedules, deleted if they still exist.
+$retired = @("BSNN 0DTE :00", "BSNN 0DTE :30")  # 0DTE posts, replaced by day/week/month levels in the 09:15 post
+
+$current = (Invoke-RestMethod "https://api.cron-job.org/jobs" -Headers $api).jobs
+foreach ($old in $current | Where-Object { $retired -contains $_.title }) {
+    Invoke-RestMethod "https://api.cron-job.org/jobs/$($old.jobId)" -Method Delete -Headers $api | Out-Null
+    Write-Host "Deleted retired job: $($old.title)"
+    Start-Sleep -Seconds 1
+}
+
+$existing = $current.title
 foreach ($job in $jobs) {
     if ($existing -contains $job.Title) {
         Write-Host "Exists already, skipped: $($job.Title)"

@@ -1,4 +1,7 @@
-"""Daily gamma levels and implied moves for the futures we trade, from saved option snapshots.
+"""Gamma levels and implied moves for the futures we trade, from saved option snapshots.
+
+Each market gets levels for the day, the week and the month ahead, each from the
+options expiring within that horizon, with the move priced over it.
 
 Shared by the Moves & gamma tab and ``bsnn-levels``, which posts them to Discord.
 Levels come from the previous session's snapshot. Open interest is published
@@ -8,7 +11,7 @@ overnight, so the daily post swaps in the morning's (see refresh_open_interest).
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +66,58 @@ def latest_snapshot(ticker: str, before=None, directory: Path | None = None) -> 
     return files[-1] if files else None
 
 
+def horizon_ends(session) -> dict[str, pd.Timestamp]:
+    """The last day of each horizon that starts with ``session``: the session itself,
+    that week's Friday and the month's last weekday (holidays aren't known)."""
+    day = pd.Timestamp(session).normalize()
+    return {"day": day, "week": day + pd.Timedelta(days=4 - day.weekday()), "month": pd.offsets.BMonthEnd().rollforward(day)}
+
+
+def next_session(after) -> pd.Timestamp:
+    """The first weekday after ``after``."""
+    return pd.Timestamp(np.busday_offset(pd.Timestamp(after).date(), 1, roll="forward"))
+
+
+@dataclass
+class HorizonLevels:
+    """Gamma levels from the options expiring within one horizon, and the move priced over it."""
+
+    covers: tuple[str, ...]  # "day", "week" and/or "month": several when they end together (e.g. a Friday's day and week)
+    end: pd.Timestamp  # last day of the horizon
+    net_gamma: float
+    flip: float
+    call_wall: float
+    put_wall: float
+    move_pct: float  # one-standard-deviation move over the horizon's trading days
+    nearest_expiry: str = ""  # set when nothing expires within the horizon and the nearest expiry was used
+
+
+def compute_horizons(dataset: pd.DataFrame, session) -> list[HorizonLevels]:
+    """Levels for the session, its week and its month, each from the options expiring by then.
+
+    Gamma from contracts that expire within a horizon is what dealers must hedge
+    until that candle closes; longer-dated positions belong to the later horizons.
+    """
+    session = pd.Timestamp(session).normalize()
+    moves = analytics.implied_moves(dataset)
+    out = []
+    for horizon, end in horizon_ends(session).items():
+        if out and out[-1].end == end:
+            out[-1].covers += (horizon,)
+            continue
+        contracts, inside = analytics.expiring_between(dataset, session, end)
+        if contracts.empty or contracts["open_interest"].sum() == 0:
+            continue
+        gamma = analytics.gamma_levels(contracts)
+        days = int(np.busday_count(session.date(), (end + pd.Timedelta(days=1)).date()))
+        move = analytics.horizon_move(moves, end, days) if not moves.empty else None
+        out.append(HorizonLevels(covers=(horizon,), end=end, net_gamma=gamma["net"], flip=gamma["flip"],
+                                 call_wall=gamma["call_wall"], put_wall=gamma["put_wall"],
+                                 move_pct=move["move_pct"] if move else np.nan,
+                                 nearest_expiry="" if inside else str(contracts["expiry"].iloc[0])))
+    return out
+
+
 @dataclass
 class MarketLevels:
     symbol: str  # the futures, e.g. NQ
@@ -76,6 +131,8 @@ class MarketLevels:
     put_wall: float
     one_day_move_pct: float
     open_interest_time: pd.Timestamp | None = None  # New York; set when newer open interest replaced the snapshot's
+    session: pd.Timestamp | None = None  # the trading day the levels are for
+    horizons: list[HorizonLevels] = field(default_factory=list)  # today, this week, this month
 
     def in_futures(self, level: float) -> float:
         return level * self.ratio
@@ -105,8 +162,13 @@ def refresh_open_interest(raw: pd.DataFrame, newer: pd.DataFrame) -> tuple[pd.Da
     return kept, pd.Timestamp(newer["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
 
 
-def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timestamp | None = None) -> MarketLevels | None:
-    """Levels from one saved chain, or None if it has no usable quotes or open interest."""
+def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timestamp | None = None,
+                   session=None) -> MarketLevels | None:
+    """Levels from one saved chain, or None if it has no usable quotes or open interest.
+
+    ``session`` is the trading day the levels are for (by default the weekday after
+    the snapshot); the day, week and month horizons start from it.
+    """
     dataset = build_dataset(raw, FILTERS)
     if dataset.empty or dataset["open_interest"].sum() == 0:
         return None
@@ -117,12 +179,13 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
         ratio = futures_ratio(inst, raw) if inst else np.nan
     except Exception:
         ratio = np.nan
+    snapshot_time = pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
+    session = next_session(snapshot_time.date()) if session is None else pd.Timestamp(session).normalize()
     return MarketLevels(
-        symbol=symbol, source=raw["ticker"].iloc[0],
-        snapshot_time=pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ),
+        symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time,
         spot=float(dataset["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan,
-        open_interest_time=open_interest_time)
+        open_interest_time=open_interest_time, session=session, horizons=compute_horizons(dataset, session))
 
 
 @dataclass
@@ -191,7 +254,10 @@ def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: 
 
     With ``refresh_oi``, today's open interest is fetched live and replaces the
     snapshot's (see :func:`refresh_open_interest`); prices and vols stay the snapshot's.
+    The levels are for ``before`` (rolled forward to a weekday), or for the weekday
+    after the snapshot when ``before`` isn't given.
     """
+    session = pd.Timestamp(np.busday_offset(pd.Timestamp(before).date(), 0, roll="forward")) if before is not None else None
     inst = instruments.resolve(symbol)
     if inst is None:
         raise ValueError(f"{symbol} isn't on the watchlist")
@@ -206,7 +272,7 @@ def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: 
                         print(f"{symbol}: {source} open interest not updated yet; using the snapshot's", file=sys.stderr)
                 except Exception as exc:
                     print(f"{symbol}: kept the snapshot's open interest ({source} fetch failed: {exc})", file=sys.stderr)
-            levels = compute_levels(symbol, raw, oi_time)
+            levels = compute_levels(symbol, raw, oi_time, session)
             if levels is not None:
                 return levels
     return None
