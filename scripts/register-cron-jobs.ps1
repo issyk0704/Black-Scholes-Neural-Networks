@@ -19,7 +19,7 @@ $jobs = @(
     @{ Title = "BSNN daily levels"; Workflow = "levels.yml";   Hours = @(9);      Minutes = @(15); Inputs = @{ post_now = $false } }
     @{ Title = "BSNN 0DTE :00";     Workflow = "zero-dte.yml"; Hours = @(10, 15); Minutes = @(0);  Inputs = @{ post_now = $false } }
     @{ Title = "BSNN 0DTE :30";     Workflow = "zero-dte.yml"; Hours = @(11, 13); Minutes = @(30); Inputs = @{ post_now = $false } }
-    @{ Title = "BSNN collect";      Workflow = "collect.yml";  Hours = @(14);     Minutes = @(30); Inputs = @{ force = $false } }
+    @{ Title = "BSNN collect";      Workflow = "collect.yml";  Hours = @(16);     Minutes = @(30); Inputs = @{ force = $false } }
 )
 
 $githubToken = Read-Host "GitHub token (bsnn-data, Actions read/write)" -AsSecureString | ConvertFrom-SecureString -AsPlainText

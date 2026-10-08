@@ -332,6 +332,13 @@ def us_session_open(now: pd.Timestamp | None = None) -> bool:
     return now.weekday() < 5 and SESSION_START <= now.time() <= SESSION_END
 
 
+def quotes_reliable(now: pd.Timestamp | None = None) -> bool:
+    """True on a weekday between 09:45 and 20:00 New York time: in the session, or after
+    the close while quotes hold their closing values."""
+    now = _new_york(now)
+    return now.weekday() < 5 and SESSION_START <= now.time() <= QUOTES_RELIABLE_UNTIL
+
+
 def snapshot_problem(chain: pd.DataFrame) -> str | None:
     """Why a chain shouldn't be saved for training, or None if it's fine.
 

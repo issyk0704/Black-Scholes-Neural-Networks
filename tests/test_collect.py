@@ -16,6 +16,16 @@ def test_us_session_open(when, expected):
     assert market_data.us_session_open(pd.Timestamp(when, tz="UTC")) is expected
 
 
+@pytest.mark.parametrize("when, expected", [
+    ("2026-10-06 20:30", True),   # 16:30 New York: after the close, quotes hold their closing values
+    ("2026-10-06 13:30", False),  # 09:30: too close to the open
+    ("2026-10-07 00:30", False),  # 20:30: SPX's overnight session has started
+    ("2026-10-10 20:30", False),  # Saturday
+])
+def test_quotes_reliable(when, expected):
+    assert market_data.quotes_reliable(pd.Timestamp(when, tz="UTC")) is expected
+
+
 def test_collect_saves_live_in_session_chains_only(tmp_path):
     def fake_fetch(ticker, save):
         assert save is False
@@ -36,7 +46,7 @@ def test_collect_saves_live_in_session_chains_only(tmp_path):
 
 def test_main_does_nothing_outside_market_hours(monkeypatch, tmp_path):
     monkeypatch.setattr(collect_cli.paths, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(market_data, "us_session_open", lambda: False)
+    monkeypatch.setattr(market_data, "quotes_reliable", lambda: False)
     monkeypatch.setattr(collect_cli, "collect", lambda *a, **k: pytest.fail("should not collect"))
     assert collect_cli.main([]) == 0
-    assert "closed" in (tmp_path / "collect.log").read_text()
+    assert "nothing collected" in (tmp_path / "collect.log").read_text()

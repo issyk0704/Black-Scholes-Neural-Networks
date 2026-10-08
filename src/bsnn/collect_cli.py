@@ -4,12 +4,12 @@
     bsnn-collect SPY QQQ       # just these tickers
     bsnn-collect --force       # run outside US hours anyway (tests that Yahoo is reachable)
 
-Yahoo blanks bids and asks outside US trading hours, so a snapshot is only
-useful when taken during the regular session (14:45-20:55 UK). Outside it the
-collector does nothing unless forced, and even then nothing is saved: every
-chain must pass :func:`bsnn.market_data.snapshot_problem` (taken in the session,
-mostly quoted) to be kept. ``scripts/register-daily-collection.ps1`` schedules
-this on weekdays.
+Yahoo's quotes are only usable from 09:45 New York until 20:00, when they still
+hold their closing values; the cloud job runs at 16:30, just after the close, so
+it captures the whole session. Outside that window the collector does nothing
+unless forced, and even then nothing is saved: every chain must pass
+:func:`bsnn.market_data.snapshot_problem` (taken in the window, mostly quoted) to
+be kept. ``scripts/register-daily-collection.ps1`` schedules this on weekdays.
 """
 
 from __future__ import annotations
@@ -54,8 +54,9 @@ def main(argv: list[str] | None = None) -> int:
 
     handlers = _start_logging()
     try:
-        if not args.force and not market_data.us_session_open():
-            log.info("US options market is closed; nothing collected. Use --force to override.")
+        if not args.force and not market_data.quotes_reliable():
+            log.info("US option quotes aren't reliable now (09:45-20:00 New York); nothing collected. "
+                     "Use --force to override.")
             return 0
         outcomes = collect([t.upper() for t in args.tickers] or option_sources())
         for ticker, outcome in outcomes.items():
