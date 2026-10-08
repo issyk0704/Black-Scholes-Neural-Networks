@@ -220,6 +220,38 @@ def test_scheduled_zero_dte_post_records_its_slot(fake_post, monkeypatch):
     assert marker.read_text().strip().endswith("0dte-10:45")
 
 
+def test_zero_dte_retries_markets_without_quotes(monkeypatch):
+    attempts = {"ES": 0}
+
+    def flaky(symbol, prefer):  # ES has no usable quotes on the first read
+        if symbol == "ES":
+            attempts["ES"] += 1
+            if attempts["ES"] == 1:
+                return None
+        return sample_zero_dte(symbol=symbol)
+
+    sleeps = []
+    monkeypatch.setattr(levels_cli, "live_zero_dte", flaky)
+    monkeypatch.setattr(levels_cli.time, "sleep", sleeps.append)
+    found, missing = levels_cli.gather_with_retries(["NQ", "ES", "YM"], True, "etf", None)
+    assert [lv.symbol for lv in found] == ["NQ", "ES", "YM"] and missing == []
+    assert sleeps == [levels_cli.RETRY_WAIT_SECONDS]
+
+
+def test_zero_dte_gives_up_after_the_retries(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(levels_cli, "live_zero_dte", lambda symbol, prefer: None)
+    monkeypatch.setattr(levels_cli.time, "sleep", sleeps.append)
+    found, missing = levels_cli.gather_with_retries(["NQ"], True, "etf", None)
+    assert found == [] and missing == ["NQ"] and len(sleeps) == levels_cli.ZERO_DTE_RETRIES
+
+
+def test_daily_levels_do_not_retry(monkeypatch):
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer: None)
+    monkeypatch.setattr(levels_cli.time, "sleep", lambda s: pytest.fail("daily levels read files; waiting won't help"))
+    assert levels_cli.gather_with_retries(["NQ"], False, "etf", None) == ([], ["NQ"])
+
+
 def test_compute_zero_dte_uses_todays_expiry():
     raw = make_chain(ticker="QQQ", expiries=("2026-01-05", "2026-01-16")).assign(futuresPrice=4140.0)
     levels = lv.compute_zero_dte("NQ", raw)

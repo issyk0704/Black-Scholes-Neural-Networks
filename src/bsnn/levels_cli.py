@@ -23,6 +23,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,6 +211,25 @@ def post(webhook_url: str, payload: dict) -> None:
 
 # --- Command line ------------------------------------------------------------------
 
+ZERO_DTE_RETRIES = 3  # Yahoo's quotes lag the open, so a 09:45 read can be mostly blank
+RETRY_WAIT_SECONDS = 120
+
+
+def gather_with_retries(markets: list[str], zero_dte: bool, source: str,
+                        before: dt.date | None) -> tuple[list, list[str]]:
+    """Like :func:`gather`, but 0DTE reads retry the markets that had no usable quotes."""
+    found, missing = gather(markets, zero_dte, source, before)
+    for _ in range(ZERO_DTE_RETRIES if zero_dte else 0):
+        if not missing:
+            break
+        print(f"No usable quotes yet for {', '.join(missing)}; trying again in {RETRY_WAIT_SECONDS} s.")
+        time.sleep(RETRY_WAIT_SECONDS)
+        more, missing = gather(missing, zero_dte, source, before)
+        found += more
+    found.sort(key=lambda lv: markets.index(lv.symbol))  # keep the cards in the requested order
+    return found, missing
+
+
 def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | None) -> tuple[list, list[str]]:
     found, missing = [], []
     for symbol in markets:
@@ -249,8 +269,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     markets = [s.upper() for s in args.markets]
-    all_levels, missing = gather(markets, args.zero_dte, args.source,
-                                 before=None if args.include_today else today)
+    all_levels, missing = gather_with_retries(markets, args.zero_dte, args.source,
+                                              before=None if args.include_today else today)
     if missing:
         print(f"No usable data for: {', '.join(missing)}", file=sys.stderr)
     if not all_levels:
