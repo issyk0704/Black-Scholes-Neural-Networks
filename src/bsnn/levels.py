@@ -109,8 +109,7 @@ def compute_horizons(dataset: pd.DataFrame, session) -> list[HorizonLevels]:
         if contracts.empty or contracts["open_interest"].sum() == 0:
             continue
         gamma = analytics.gamma_levels(contracts)
-        days = int(np.busday_count(session.date(), (end + pd.Timedelta(days=1)).date()))
-        move = analytics.horizon_move(moves, end, days) if not moves.empty else None
+        move = analytics.horizon_move(moves, session, end) if not moves.empty else None
         out.append(HorizonLevels(covers=(horizon,), end=end, net_gamma=gamma["net"], flip=gamma["flip"],
                                  call_wall=gamma["call_wall"], put_wall=gamma["put_wall"],
                                  move_pct=move["move_pct"] if move else np.nan,

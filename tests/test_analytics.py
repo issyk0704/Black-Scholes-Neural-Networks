@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from bsnn import analytics, pricing
@@ -40,6 +41,37 @@ def test_one_day_move_skips_same_day_expiry(flat):
     day = analytics.one_day_move(moves)
     assert day["expiry"] == moves["expiry"].iloc[1]
     assert day["move"] == pytest.approx(100 * moves["atm_iv"].iloc[1] / np.sqrt(252))
+
+
+SNAPSHOT_DAY = "2026-01-05"  # make_chain's default snapshot, a Monday
+
+
+def test_horizon_move_on_an_expiry_is_that_expirys_move(flat):
+    moves = analytics.implied_moves(flat)
+    first = moves.iloc[0]
+    move = analytics.horizon_move(moves, SNAPSHOT_DAY, first["expiry"])
+    assert move["expiry"] == first["expiry"] and move["move"] == pytest.approx(first["move"])
+
+
+def test_horizon_move_takes_the_horizons_share_of_the_sessions(flat):
+    moves = analytics.implied_moves(flat)
+    first = moves.iloc[0]  # Friday 20 February
+    friday_before = pd.Timestamp(first["expiry"]) - pd.Timedelta(days=7)  # no expiry that early: uses the first
+    move = analytics.horizon_move(moves, SNAPSHOT_DAY, friday_before)
+    assert move["expiry"] == first["expiry"]
+    assert move["move"] == pytest.approx(first["move"] * np.sqrt(30 / 35))  # 30 of the expiry's 35 sessions
+
+
+def test_sessions_through_skips_weekends():
+    assert analytics.sessions_through("2026-10-12", "2026-10-16") == 5  # Monday to Friday
+    assert analytics.sessions_through("2026-10-09", "2026-10-12") == 2  # Friday and Monday
+    assert analytics.sessions_through("2026-10-10", "2026-10-10") == 1  # a Saturday still counts as one
+
+
+def test_horizon_move_skips_an_expiry_hours_away(flat):
+    moves = analytics.implied_moves(flat).assign(days=[0.2, 30, 60, 90])
+    assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[3])["expiry"] == moves["expiry"].iloc[3]
+    assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[0])["expiry"] == moves["expiry"].iloc[1]
 
 
 def test_gamma_by_strike_matches_formula(flat):

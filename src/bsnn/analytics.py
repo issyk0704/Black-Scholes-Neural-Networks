@@ -74,20 +74,33 @@ def one_day_move(moves: pd.DataFrame, min_days: float = 1.0) -> dict | None:
             "low": row["spot"] - move, "high": row["spot"] + move}
 
 
-def horizon_move(moves: pd.DataFrame, last_expiry, trading_days: int, min_days: float = 1.0) -> dict | None:
-    """The move priced over ``trading_days`` sessions, e.g. to the end of the week or month.
+CALENDAR_DAYS = 365  # implied vols are annualised over calendar time (see market_data.years_to_expiry)
 
-    Takes the ATM vol of the last expiry on or before ``last_expiry`` (the one that
-    spans the horizon), or the nearest expiry if none falls inside it, and scales
-    it by sqrt(trading_days / 252). Expiries under ``min_days`` away are skipped, as
-    in :func:`one_day_move`, which this matches for one trading day.
+
+def sessions_through(first_day, last_day) -> int:
+    """Weekdays from ``first_day`` to ``last_day``, both included (at least one; holidays aren't known)."""
+    first, last = pd.Timestamp(first_day).date(), (pd.Timestamp(last_day) + pd.Timedelta(days=1)).date()
+    return max(int(np.busday_count(first, last)), 1)
+
+
+def horizon_move(moves: pd.DataFrame, first_day, last_day, min_days: float = 0.5) -> dict | None:
+    """The move priced over the sessions from ``first_day`` to ``last_day``, e.g. a day, a week or a month.
+
+    Takes the last expiry on or before ``last_day`` (the one that spans the horizon),
+    or the nearest expiry if none falls inside it. Its total implied variance (ATM vol
+    squared times its time to expiry, weekends included) is shared equally among its
+    sessions from ``first_day``, and the horizon gets its sessions' share. So when the
+    expiry falls on ``last_day`` this is exactly the move that expiry prices, and a
+    Monday priced from a Friday expiry gets a fifth of that week, not the weekend's
+    share too. Expiries under ``min_days`` away (same-day ones read in the session) are skipped.
     """
     eligible = moves[moves["days"] >= min_days]
     if eligible.empty:
         return None
-    inside = eligible[pd.to_datetime(eligible["expiry"]) <= pd.Timestamp(last_expiry)]
+    inside = eligible[pd.to_datetime(eligible["expiry"]) <= pd.Timestamp(last_day)]
     row = inside.iloc[-1] if not inside.empty else eligible.iloc[0]
-    move = row["spot"] * row["atm_iv"] * np.sqrt(trading_days / TRADING_DAYS)
+    share = sessions_through(first_day, last_day) / sessions_through(first_day, row["expiry"])
+    move = row["spot"] * row["atm_iv"] * np.sqrt(row["days"] / CALENDAR_DAYS * share)
     return {"expiry": row["expiry"], "atm_iv": row["atm_iv"], "move": move, "move_pct": move / row["spot"],
             "low": row["spot"] - move, "high": row["spot"] + move}
 

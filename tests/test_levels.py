@@ -386,10 +386,16 @@ def test_each_horizon_uses_the_options_expiring_within_it():
     assert not (day.nearest_expiry or week.nearest_expiry or month.nearest_expiry)
 
 
-def test_one_day_horizon_matches_the_one_day_move():
+def test_each_horizon_prices_the_move_to_its_expiry():
+    from bsnn.features import build_dataset
     levels = lv.compute_levels("NQ", horizon_chain())
     assert levels.session == pd.Timestamp("2026-10-05")  # the Monday after the snapshot
-    assert levels.horizons[0].move_pct == pytest.approx(levels.one_day_move_pct)
+    moves = analytics.implied_moves(build_dataset(horizon_chain(), lv.FILTERS)).set_index("expiry")
+    # Friday evening to Monday's close is about three calendar days, weekend included, as the options price it.
+    day, week, month = levels.horizons
+    assert day.move_pct == pytest.approx(moves.at["2026-10-05", "move_pct"])
+    assert week.move_pct == pytest.approx(moves.at["2026-10-09", "move_pct"])
+    assert month.move_pct == pytest.approx(moves.at["2026-10-30", "move_pct"])
 
 
 def test_friday_shares_a_column_for_the_day_and_week():
@@ -402,8 +408,11 @@ def test_friday_shares_a_column_for_the_day_and_week():
 def test_horizon_without_an_expiry_uses_the_nearest():
     from bsnn.features import build_dataset
     raw = make_chain(ticker="DIA", snapshot=FRIDAY_CLOSE, expiries=("2026-10-07", "2026-11-20"))
-    day, week, month = lv.compute_horizons(build_dataset(raw, lv.FILTERS), "2026-10-05")
+    dataset = build_dataset(raw, lv.FILTERS)
+    day, week, month = lv.compute_horizons(dataset, "2026-10-05")
     assert day.nearest_expiry == "2026-10-07" and week.nearest_expiry == "" and month.nearest_expiry == ""
+    wednesday = analytics.implied_moves(dataset).set_index("expiry").at["2026-10-07", "move_pct"]
+    assert day.move_pct == pytest.approx(wednesday * np.sqrt(1 / 3))  # Monday is one of its three sessions
 
 
 def test_levels_for_dates_the_horizons_from_the_posting_day(snapshots):
