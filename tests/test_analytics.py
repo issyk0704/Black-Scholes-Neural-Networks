@@ -74,6 +74,14 @@ def test_horizon_move_skips_an_expiry_hours_away(flat):
     assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[0])["expiry"] == moves["expiry"].iloc[1]
 
 
+def test_in_units_of_keeps_dollar_gamma(flat):
+    scaled = analytics.in_units_of(flat, 4100.0)
+    assert scaled["S"].iloc[0] == pytest.approx(4100.0) and scaled["K"].max() == pytest.approx(flat["K"].max() * 41)
+    assert analytics._gex(scaled, 4100.0) == pytest.approx(analytics._gex(flat, 100.0), rel=1e-9)
+    back = analytics.in_units_of(scaled, 100.0)
+    assert back["contract_size"].to_numpy() == pytest.approx(analytics.CONTRACT_SIZE)
+
+
 def test_gamma_by_strike_matches_formula(flat):
     one = flat[(flat["K"] == 100) & (flat["expiry"] == flat["expiry"].min())]
     by_strike = analytics.gamma_by_strike(one)

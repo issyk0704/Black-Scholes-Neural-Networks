@@ -106,12 +106,31 @@ def horizon_move(moves: pd.DataFrame, first_day, last_day, min_days: float = 0.5
 
 
 def _gex(df: pd.DataFrame, spot) -> np.ndarray:
-    """Signed dollar gamma per 1% move for each contract, if the underlying were at ``spot``."""
+    """Signed dollar gamma per 1% move for each contract, if the underlying were at ``spot``.
+
+    A ``contract_size`` column, set by :func:`in_units_of`, overrides :data:`CONTRACT_SIZE`
+    (rows added from a chain without one, which are blank, keep the standard size).
+    """
     gamma = np.asarray(pricing.greeks(spot, df["K"].to_numpy(), df["time_to_expiry"].to_numpy(),
                                       df["risk_free_rate"].to_numpy(), df["market_iv"].to_numpy(),
                                       df["dividend_yield"].to_numpy(), df["is_call"].to_numpy() > 0)["gamma"])
     sign = np.where(df["is_call"].to_numpy() > 0, 1.0, -1.0)
-    return sign * gamma * df["open_interest"].to_numpy() * CONTRACT_SIZE * np.asarray(spot) ** 2 * 0.01
+    size = df["contract_size"].fillna(CONTRACT_SIZE).to_numpy() if "contract_size" in df else CONTRACT_SIZE
+    return sign * gamma * df["open_interest"].to_numpy() * size * np.asarray(spot) ** 2 * 0.01
+
+
+def in_units_of(df: pd.DataFrame, spot: float) -> pd.DataFrame:
+    """``df`` restated for an underlying priced at ``spot``, with every contract's dollar gamma unchanged.
+
+    Lets one market's option chains be added together, e.g. NDX options in QQQ
+    prices: strikes, spot and option prices scale by spot / df's spot, and the
+    contract size scales the other way, so each contract keeps its notional.
+    Implied vols and times to expiry don't depend on the price scale.
+    """
+    scale = spot / float(df["S"].iloc[0])
+    size = df["contract_size"] if "contract_size" in df else CONTRACT_SIZE
+    prices = {col: df[col] * scale for col in ("S", "K", "bid", "ask", "mid")}
+    return df.assign(**prices, contract_size=size / scale)
 
 
 def within_days(df: pd.DataFrame, max_days: float | None) -> pd.DataFrame:

@@ -398,6 +398,52 @@ def test_each_horizon_prices_the_move_to_its_expiry():
     assert month.move_pct == pytest.approx(moves.at["2026-10-30", "move_pct"])
 
 
+def two_chains(snapshot=FRIDAY_CLOSE):
+    """QQQ and NDX chains of the same market, NDX quoted 41 times higher with a tenth of the contracts."""
+    expiries = ("2026-10-05", "2026-10-09", "2026-10-30")
+    qqq = make_chain(ticker="QQQ", snapshot=snapshot, spot=100.0, expiries=expiries).assign(futuresPrice=4150.0)
+    ndx = make_chain(ticker="^NDX", snapshot=snapshot, spot=100.0, expiries=expiries)
+    for col in ("strike", "bid", "ask", "lastPrice", "underlyingPrice"):
+        ndx[col] = ndx[col] * 41
+    ndx["openInterest"] = ndx["openInterest"] / 10
+    return qqq, ndx
+
+
+def test_levels_add_up_every_chain_in_the_first_chains_prices():
+    qqq, ndx = two_chains()
+    alone = lv.compute_levels("NQ", qqq)
+    both = lv.compute_levels("NQ", qqq, others=[ndx])
+    assert both.source == "QQQ" and both.sources == ("QQQ", "^NDX") and both.spot == pytest.approx(100.0)
+    # The same smile with a tenth of the contracts at 41x the notional: about 4.1x QQQ's gamma, in the same places.
+    from bsnn.features import build_dataset
+    own, other = (build_dataset(chain, lv.FILTERS) for chain in (qqq, ndx))
+    call_gamma = lambda dataset: analytics.gamma_by_strike(dataset)["call"].sum()  # noqa: E731
+    ndx_gamma = call_gamma(analytics.in_units_of(other, 100.0))
+    assert ndx_gamma == pytest.approx(call_gamma(own) * 4.1, rel=0.05)
+    assert call_gamma(lv.combine(own, [other])) == pytest.approx(call_gamma(own) + ndx_gamma, rel=1e-9)
+    assert both.horizons[1].call_wall == pytest.approx(alone.horizons[1].call_wall)
+    assert both.horizons[1].flip == pytest.approx(alone.horizons[1].flip, rel=1e-3)
+    assert [h.net_gamma for h in both.own_horizons] == [h.net_gamma for h in alone.horizons]
+    assert alone.sources == ("QQQ",) and alone.own_horizons is alone.horizons
+
+
+def test_levels_for_adds_the_index_chain_from_the_same_day(tmp_path):
+    qqq, ndx = two_chains()
+    for chain in (qqq, ndx):
+        market_data.save_option_snapshot(chain, tmp_path)
+    market_data.save_option_snapshot(two_chains("2026-10-01T20:30:00+00:00")[1], tmp_path)  # an older NDX
+    with patch.object(lv, "futures_ratio", return_value=41.5):
+        levels = lv.levels_for("NQ", before="2026-10-05", directory=tmp_path)
+    assert levels.sources == ("QQQ", "^NDX")
+
+
+def test_levels_for_leaves_out_a_chain_from_another_day(snapshots, capsys):
+    with patch.object(lv, "futures_ratio", return_value=41.5):
+        levels = lv.levels_for("NQ", before="2026-10-07", directory=snapshots)  # QQQ Tuesday, NDX Monday
+    assert levels.sources == ("QQQ",)
+    assert "no ^NDX snapshot from 2026-10-06" in capsys.readouterr().err
+
+
 def test_friday_shares_a_column_for_the_day_and_week():
     from bsnn.features import build_dataset
     dataset = build_dataset(horizon_chain(), lv.FILTERS)
