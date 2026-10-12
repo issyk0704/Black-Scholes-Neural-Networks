@@ -98,9 +98,13 @@ When two columns end on the same day (today and this week on a Friday) they shar
 levels describe the size and character of the moves dealers' hedging encourages, not their
 direction: read them alongside the higher-timeframe bias, not as signals.
 
-Open interest is published overnight, so a snapshot taken during a session still the day before's. The card therefore fetches this morning's open interest (which includes the
-previous session's full trading) and combines it with the snapshot's prices and vols, the last
-reliable quotes before the open. If the morning's figures aren't out yet, it keeps the snapshot's.
+Every level is measured at the **current futures price** when the card is made (converted to the
+ETF at the snapshot's ratio): the walls are the most gamma above and below where price is now, not
+where it closed. During US hours (09:45-20:00 New York) the card reads the live chains outright,
+so prices, vols and open interest are all current, and today's 1σ is the move still priced to the
+close. Before the open, quotes are blank, so it uses the last snapshot's prices and vols with this
+morning's open interest (published overnight, so it includes the previous session's full trading);
+if the morning's figures aren't out yet, it keeps the snapshot's.
 
 ```powershell
 .\.venv\Scripts\bsnn-levels.exe                        # print the message as JSON; nothing is sent
