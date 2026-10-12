@@ -5,10 +5,12 @@
     bsnn-levels --post --scheduled      # send only in the morning posting slot, once a day
     bsnn-levels --zero-dte              # today's 0DTE levels from live chains (US hours only)
     bsnn-levels --markets NQ ES
-    bsnn-levels --source index          # read NDX / SPX options instead of QQQ / SPY (DIA stays for YM)
+    bsnn-levels --source index          # state the levels in NDX / SPX prices instead of QQQ / SPY
 
 The morning post gives each market's levels for today, this week and this month,
-each from the options expiring within that horizon. They use the newest saved
+each from the options expiring within that horizon. The gamma levels add up the
+index and ETF options (NDX + QQQ for NQ, SPX + SPY for ES, DIA for YM); each column
+also lists the ETF's own levels, in its prices. They use the newest saved
 snapshot from before today for prices and vols, with this morning's open interest,
 which is published overnight and so includes the previous session's full trading.
 0DTE levels read live chains, so they move with price and time left, but they
@@ -124,14 +126,39 @@ def _gamma_fields(levels: MarketLevels, prefix: str = "") -> list[dict]:
 HORIZON_NAMES = {"day": "Today", "week": "This week", "month": "This month"}
 
 
+def _option_price(level: float) -> str:
+    """A level in the option underlying's own prices: whole strikes without decimals."""
+    if not np.isfinite(level):
+        return "none"
+    return f"{level:,.0f}" if float(level).is_integer() else f"{level:,.2f}"
+
+
+def _own_line(levels: MarketLevels, h: HorizonLevels) -> str | None:
+    """The source chain's own levels for the horizon, e.g. "QQQ alone: flip 748.31 · CW 760 · PW 750"."""
+    own = next((o for o in levels.own_horizons if o.end == h.end), None)
+    if own is None:
+        return None
+    name = levels.source.lstrip("^") + (" alone" if len(levels.sources) > 1 else "")
+    return (f"{name}: flip {_option_price(own.flip)} · CW {_option_price(own.call_wall)} "
+            f"· PW {_option_price(own.put_wall)}")
+
+
+def _sources(levels: MarketLevels) -> str:
+    """The chains in the levels, e.g. "QQQ + NDX"."""
+    return " + ".join(s.lstrip("^") for s in levels.sources or (levels.source,))
+
+
 def _horizon_field(levels: MarketLevels, h: HorizonLevels, live_price: float | None) -> dict:
-    """One column of the card: a horizon's regime, gamma levels and 1σ range."""
+    """One column of the card: a horizon's regime, gamma levels, the source's own levels and 1σ range."""
     name = " & ".join(HORIZON_NAMES[c] for c in h.covers)
     if "day" not in h.covers:
         name += f" (to {h.end:%a %d %b})"
     lines = ["Positive gamma: damping" if h.net_gamma > 0 else "Negative gamma: amplifying",
              f"Flip {_points(levels, h.flip)}", f"Call wall {_points(levels, h.call_wall)}",
              f"Put wall {_points(levels, h.put_wall)}"]
+    own = _own_line(levels, h)
+    if own:
+        lines.append(own)
     if np.isfinite(h.move_pct):
         if live_price:
             points = live_price * h.move_pct
@@ -147,7 +174,7 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
     """The morning card for a market: levels for today, this week and this month, side by side."""
     # Without horizons (nothing left to expire this month), fall back to every expiry's levels.
     fields = [_horizon_field(levels, h, live_price) for h in levels.horizons] or _gamma_fields(levels)
-    taken, source = levels.snapshot_time, levels.source.lstrip("^")
+    taken, source = levels.snapshot_time, _sources(levels)
     description = (f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({_price_then(levels)} "
                    f"then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
     if levels.open_interest_time is not None:
@@ -197,12 +224,13 @@ def zero_dte_embed(levels: ZeroDteLevels, live_price: float | None) -> dict:
     }
 
 
-DAILY_FOOTER = ("Each column uses only the options expiring by its end. Positive gamma: dealers tend to sell rallies "
-                "and buy dips; negative: they chase moves. Call wall: most call gamma above price then; put wall: "
-                "most put gamma below. 1σ: the move priced to the column's end, around the current futures price "
-                "(about 68% of closes land inside). Converted to futures at the futures/ETF price ratio when the "
-                "options were read. Gamma assumes dealers are long customers' calls and short their puts. "
-                "Context, not signals.")
+DAILY_FOOTER = ("Each column uses only the options expiring by its end, adding up index and ETF options (NDX + QQQ, "
+                "SPX + SPY; DIA for YM); the ETF line gives the ETF's own levels in its prices. Positive gamma: "
+                "dealers tend to sell rallies and buy dips; negative: they chase moves. Call wall: most call gamma "
+                "above price then; put wall: most put gamma below. 1σ: the move the options price to the column's "
+                "end, around the current futures price (about 68% of closes land inside). Converted to futures at "
+                "the futures/ETF price ratio when the options were read. Gamma assumes dealers are long customers' "
+                "calls and short their puts. Context, not signals.")
 ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live prices, so they move with price and time "
                    "left, but can't see positions opened today. Busiest strikes show volume, not direction. "
                    "Context, not signals.")
@@ -271,7 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Post options levels for NQ, ES and YM to Discord.")
     parser.add_argument("--markets", nargs="+", default=list(DEFAULT_MARKETS), help="watchlist symbols")
     parser.add_argument("--source", choices=SOURCES, default="etf",
-                        help="etf: QQQ/SPY/DIA options (default); index: NDX/SPX options")
+                        help="whose prices the levels are in: etf, QQQ/SPY/DIA (default); index, NDX/SPX. "
+                             "Both chains go into the gamma levels either way")
     parser.add_argument("--zero-dte", action="store_true", help="today's 0DTE levels from live chains (US hours)")
     parser.add_argument("--post", action="store_true", help="send to the webhook in DISCORD_WEBHOOK_URL")
     parser.add_argument("--scheduled", "--at-open", dest="scheduled", action="store_true",

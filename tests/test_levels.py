@@ -161,8 +161,23 @@ def test_message_is_webhook_ready_json():
     assert len(json.dumps(payload)) < 6000  # Discord's limit for a message's embeds
 
 
+OWN_HORIZONS = [lv.HorizonLevels(**(vars(h) | {"flip": 748.31, "call_wall": 760.0, "put_wall": 750.0}))
+                for h in HORIZONS]
+
+
+def test_card_lists_the_etfs_own_levels():
+    card = levels_cli.market_embed(sample_levels(source="QQQ", sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS),
+                                   None)
+    assert card["description"].startswith("From QQQ + NDX options at 14:30 New York")
+    assert card["fields"][0]["value"].split("\n")[4] == "QQQ alone: flip 748.31 · CW 760 · PW 750"
+    single = levels_cli.market_embed(sample_levels(symbol="YM", source="DIA", sources=("DIA",),
+                                                   own_horizons=OWN_HORIZONS), None)
+    assert "\nDIA: flip 748.31 · CW 760 · PW 750\n" in single["fields"][0]["value"]
+
+
 def test_three_markets_fit_in_one_message():
-    payload = levels_cli.build_message([sample_levels(symbol=s) for s in ("NQ", "ES", "YM")],
+    payload = levels_cli.build_message([sample_levels(symbol=s, sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS)
+                                        for s in ("NQ", "ES", "YM")],
                                        {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0},
                                        pd.Timestamp("2026-10-06").date())
     assert len(json.dumps(payload, ensure_ascii=False)) < 6000
