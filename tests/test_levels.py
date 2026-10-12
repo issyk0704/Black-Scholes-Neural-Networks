@@ -263,17 +263,36 @@ def test_record_post_keeps_today_only(tmp_path):
     assert marker.read_text() == "2026-10-06 daily\n2026-10-06 manual-0dte-13:35\n"
 
 
-def test_include_today_lifts_the_date_limit(monkeypatch):
+TUESDAY_0915 = pd.Timestamp("2026-10-06 13:15", tz="UTC")  # 09:15 New York
+
+
+def passing_levels(symbol="NQ", **changes):
+    """A card for Tuesday 06 Oct that passes every check: all its chains, measured at 24,000."""
+    from bsnn import instruments
+    sources = tuple(lv.option_sources(instruments.resolve(symbol), "etf"))
+    return sample_levels(**({"symbol": symbol, "sources": sources, "measured_at": 24_000.0,
+                             "session": pd.Timestamp("2026-10-06")} | changes))
+
+
+@pytest.mark.parametrize("now, posting_day", [
+    ("2026-10-06 13:15", "2026-10-06"),  # 09:15 New York: today
+    ("2026-10-06 21:00", "2026-10-07"),  # 17:00, after the close: tomorrow
+    ("2026-10-10 15:00", "2026-10-12"),  # Saturday: Monday
+])
+def test_posting_day_follows_the_clock(monkeypatch, now, posting_day):
     seen = []
+    monkeypatch.setattr(levels_cli, "now_utc", lambda: pd.Timestamp(now, tz="UTC"))
     monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: seen.append(before))
+    monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
     levels_cli.main(["--markets", "NQ"])
-    levels_cli.main(["--markets", "NQ", "--include-today"])
-    assert seen[0] is not None and seen[1] is None
+    levels_cli.main(["--markets", "NQ", "--include-today"])  # still accepted, no longer changes anything
+    assert seen == [pd.Timestamp(posting_day).date()] * 2
 
 
 def test_post_requires_webhook(monkeypatch, capsys):
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: sample_levels(symbol=symbol))
+    monkeypatch.setattr(levels_cli, "now_utc", lambda: TUESDAY_0915)
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: passing_levels(symbol))
     monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
     assert levels_cli.main(["--markets", "NQ", "--post"]) == 1
     assert "DISCORD_WEBHOOK_URL" in capsys.readouterr().err
@@ -284,7 +303,8 @@ def fake_post(monkeypatch, tmp_path):
     sent = {}
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
     monkeypatch.setattr(levels_cli.paths, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: sample_levels(symbol=symbol))
+    monkeypatch.setattr(levels_cli, "now_utc", lambda: TUESDAY_0915)
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: passing_levels(symbol))
     monkeypatch.setattr(levels_cli, "live_zero_dte", lambda symbol, prefer: sample_zero_dte(symbol=symbol))
     monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
     monkeypatch.setattr(levels_cli, "post", lambda url, payload: sent.update(url=url, payload=payload))
@@ -317,6 +337,23 @@ def test_scheduled_daily_post_records_its_slot(fake_post, monkeypatch):
     assert levels_cli.main(["--post", "--scheduled"]) == 0
     assert sent["payload"]["content"].startswith("**Options levels for")
     assert marker.read_text().strip().endswith(" daily")
+
+
+def test_card_failing_a_check_is_left_out_and_fails_the_run(fake_post, monkeypatch, capsys):
+    sent, _ = fake_post
+    wrong_side = passing_levels("ES", measured_at=23_000.0)  # below every put wall
+    monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw:
+                        wrong_side if symbol == "ES" else passing_levels(symbol))
+    assert levels_cli.main(["--markets", "NQ", "ES", "--post"]) == 1
+    assert [e["title"] for e in sent["payload"]["embeds"]] == ["NQ options levels"]
+    assert "ES left out: day put wall 23,800.00 isn't below price 23,000.00" in capsys.readouterr().err
+
+
+def test_nothing_is_posted_when_every_card_fails(fake_post, monkeypatch):
+    sent, _ = fake_post
+    monkeypatch.setattr(levels_cli, "levels_for",
+                        lambda symbol, before, prefer, **kw: passing_levels(symbol, sources=(symbol,)))
+    assert levels_cli.main(["--markets", "NQ", "--post"]) == 1 and sent == {}
 
 
 def test_zero_dte_is_no_longer_scheduled(fake_post):

@@ -16,6 +16,10 @@ which is published overnight and so includes the previous session's full trading
 0DTE levels read live chains, so they move with price and time left, but they
 still rest on this morning's open interest.
 
+The posting day follows the clock: before the 16:00 New York close it's today,
+after it the next weekday. Before a morning card is posted it must pass the
+checks in levels_checks; a market that fails is left out and the run fails.
+
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
 Actions secret), never in a file.
 """
@@ -35,8 +39,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bsnn import __version__, instruments, market_data, paths
-from bsnn.levels import DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for, live_zero_dte
+from bsnn import __version__, instruments, levels_checks, market_data, paths
+from bsnn.levels import (DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for,
+                         live_zero_dte, session_for)
 
 POSITIVE, NEGATIVE = 0x2FA36B, 0xE0663A  # embed colours
 USER_AGENT = f"bsnn-levels/{__version__} (+https://github.com/issyk0704/Black-Scholes-Neural-Networks)"
@@ -319,6 +324,24 @@ def current_prices(markets: list[str]) -> dict[str, float]:
     return prices
 
 
+def now_utc() -> pd.Timestamp:
+    """The current time (a function so tests can fix the clock)."""
+    return pd.Timestamp.now(tz="UTC")
+
+
+def checked(all_levels: list[MarketLevels], session: pd.Timestamp, prefer: str) -> tuple[list[MarketLevels], list[str]]:
+    """The cards that pass :func:`levels_checks.problems`, and the symbols left out (with the reasons printed)."""
+    passed, failed = [], []
+    for lv in all_levels:
+        issues = levels_checks.problems(lv, session, prefer)
+        if issues:
+            print(f"{lv.symbol} left out: {'; '.join(issues)}", file=sys.stderr)
+            failed.append(lv.symbol)
+        else:
+            passed.append(lv)
+    return passed, failed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Post options levels for NQ, ES and YM to Discord.")
     parser.add_argument("--markets", nargs="+", default=list(DEFAULT_MARKETS), help="watchlist symbols")
@@ -330,11 +353,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scheduled", "--at-open", dest="scheduled", action="store_true",
                         help="only send in the morning posting slot, and only once a day")
     parser.add_argument("--include-today", action="store_true",
-                        help="daily levels: also use today's snapshot (for testing after the close)")
+                        help="no longer needed: the posting day follows the clock (kept for older workflow runs)")
     args = parser.parse_args(argv)
 
-    now = pd.Timestamp.now(tz="UTC")
+    now = now_utc()
     today = now.tz_convert(market_data.MARKET_TZ).date()
+    session = session_for(now.tz_convert(market_data.MARKET_TZ))  # today, or the next weekday after the close
     marker = paths.DATA_DIR / "levels_posted.txt"
     slot = None
     if args.scheduled and args.zero_dte:
@@ -347,18 +371,22 @@ def main(argv: list[str] | None = None) -> int:
 
     markets = [s.upper() for s in args.markets]
     live_prices = current_prices(markets)
-    all_levels, missing = gather_with_retries(markets, args.zero_dte, args.source,
-                                              before=None if args.include_today else today, prices=live_prices)
+    all_levels, missing = gather_with_retries(markets, args.zero_dte, args.source, before=session.date(),
+                                              prices=live_prices)
+    if not args.zero_dte:
+        all_levels, failed = checked(all_levels, session, args.source)
+        missing += failed
     if missing:
         print(f"No usable data for: {', '.join(missing)}", file=sys.stderr)
     if not all_levels:
         print("Nothing to post.", file=sys.stderr)
         return 1
-    payload = build_message(all_levels, live_prices, today)
+    payload = build_message(all_levels, live_prices, today if args.zero_dte else session.date())
 
+    status = 1 if missing else 0  # a market left out fails the run, after posting the others
     if not args.post:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0
+        return status
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
         print("Set DISCORD_WEBHOOK_URL to the channel's webhook URL to post.", file=sys.stderr)
@@ -366,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     post(webhook, payload)
     record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
     print(f"Posted {'0DTE ' if args.zero_dte else ''}levels for {', '.join(lv.symbol for lv in all_levels)}.")
-    return 0
+    return status
 
 
 if __name__ == "__main__":
