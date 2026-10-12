@@ -15,6 +15,7 @@ data/collect.log
 # Record of Discord posts (kept in bsnn-data for the scheduled runs).
 data/levels_posted.txt
 data/levels/
+data/levels_messages.json
 # The private bsnn-data repository (cloud-collected snapshots) is cloned here.
 data/options/cloud/
 # Price history is a download cache; only the original four seed files are tracked.

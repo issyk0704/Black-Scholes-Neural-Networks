@@ -3,6 +3,7 @@
     bsnn-levels                         # print the message as JSON (nothing is sent)
     bsnn-levels --post                  # send it to the webhook in DISCORD_WEBHOOK_URL
     bsnn-levels --post --scheduled      # send only in the morning posting slot, once a day
+    bsnn-levels --post --new-message    # post a separate card instead of updating the day's
     bsnn-levels --zero-dte              # today's 0DTE levels from live chains (US hours only)
     bsnn-levels --markets NQ ES
     bsnn-levels --source index          # state the levels in NDX / SPX prices instead of QQQ / SPY
@@ -20,6 +21,10 @@ The posting day follows the clock: before the 16:00 New York close it's today,
 after it the next weekday. Before a morning card is posted it must pass the
 checks in levels_checks; a market that fails is left out and the run fails.
 
+The scheduled post starts each day's card. A manual post then edits that card in
+place (its heading says when it was updated), so corrections and refreshes don't
+add messages; --new-message posts a separate card instead.
+
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
 Actions secret), never in a file.
 """
@@ -32,6 +37,8 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -249,8 +256,9 @@ ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live price
                    "Context, not signals.")
 
 
-def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float], today: dt.date) -> dict:
-    """The full webhook payload: a heading plus one card per market."""
+def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float], today: dt.date,
+                  as_of: pd.Timestamp | None = None) -> dict:
+    """The full webhook payload: a heading (with the New York time ``as_of``, if given) plus one card per market."""
     zero_dte = bool(all_levels) and isinstance(all_levels[0], ZeroDteLevels)
     make = zero_dte_embed if zero_dte else market_embed
     embeds = [make(lv, live_prices.get(lv.symbol)) for lv in all_levels]
@@ -260,15 +268,73 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
         heading = f"**0DTE gamma update · {all_levels[0].snapshot_time:%H:%M} New York, {today:%a %d %b}**"
     else:
         heading = f"**Options levels for {today:%A %d %B %Y}**"
+        if as_of is not None:
+            heading += f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
     return {"username": "Options levels", "content": heading, "embeds": embeds}
 
 
-def post(webhook_url: str, payload: dict) -> None:
-    request = urllib.request.Request(webhook_url, data=json.dumps(payload).encode(), method="POST",
+def webhook_endpoint(webhook_url: str, path: str = "", **query: str) -> str:
+    """The webhook URL with ``path`` appended and ``query`` added, keeping any query it already has."""
+    parts = urllib.parse.urlsplit(webhook_url)
+    params = urllib.parse.parse_qsl(parts.query) + list(query.items())
+    return urllib.parse.urlunsplit(parts._replace(path=parts.path.rstrip("/") + path,
+                                                  query=urllib.parse.urlencode(params)))
+
+
+def _send(url: str, payload: dict, method: str) -> dict:
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), method=method,
                                      headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=20) as response:  # raises on HTTP errors
         if response.status not in (200, 204):
             raise RuntimeError(f"Discord answered {response.status}")
+        body = response.read()
+    return json.loads(body) if body else {}
+
+
+def post(webhook_url: str, payload: dict) -> str | None:
+    """Send a new message; returns its ID, so the day's card can be edited later."""
+    return _send(webhook_endpoint(webhook_url, wait="true"), payload, "POST").get("id")
+
+
+def edit(webhook_url: str, message_id: str, payload: dict) -> None:
+    """Replace a message this webhook sent (a webhook can't change its name on an edit)."""
+    body = {key: value for key, value in payload.items() if key != "username"}
+    _send(webhook_endpoint(webhook_url, f"/messages/{message_id}"), body, "PATCH")
+
+
+MESSAGES_KEPT = 14  # days of message IDs to remember
+
+
+def load_message_ids(path: Path) -> dict[str, str]:
+    """Each posting day's card: {"2026-10-12": "<Discord message ID>"}."""
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def save_message_id(path: Path, day, message_id: str) -> None:
+    ids = load_message_ids(path) | {f"{pd.Timestamp(day):%Y-%m-%d}": message_id}
+    recent = dict(sorted(ids.items())[-MESSAGES_KEPT:])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(recent, indent=1) + "\n", encoding="utf-8")
+
+
+def send(webhook: str, payload: dict, day, store: Path, update: bool, remember: bool = True) -> tuple[str, str | None]:
+    """Edit ``day``'s card when ``update`` and there is one, otherwise post a new message
+    (also when the card was deleted in Discord), which becomes the day's card if ``remember``.
+    Returns what happened and the message ID."""
+    key = f"{pd.Timestamp(day):%Y-%m-%d}"
+    existing = load_message_ids(store).get(key) if update else None
+    if existing:
+        try:
+            edit(webhook, existing, payload)
+            return "edited", existing
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            print(f"The {key} card is gone from Discord; posting a new one.", file=sys.stderr)
+    message_id = post(webhook, payload)
+    if message_id and remember:
+        save_message_id(store, day, message_id)
+    return "posted", message_id
 
 
 # --- Command line ------------------------------------------------------------------
@@ -352,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--post", action="store_true", help="send to the webhook in DISCORD_WEBHOOK_URL")
     parser.add_argument("--scheduled", "--at-open", dest="scheduled", action="store_true",
                         help="only send in the morning posting slot, and only once a day")
+    parser.add_argument("--new-message", action="store_true",
+                        help="post a separate card instead of editing the day's (manual posts edit it by default)")
     parser.add_argument("--include-today", action="store_true",
                         help="no longer needed: the posting day follows the clock (kept for older workflow runs)")
     args = parser.parse_args(argv)
@@ -381,7 +449,8 @@ def main(argv: list[str] | None = None) -> int:
     if not all_levels:
         print("Nothing to post.", file=sys.stderr)
         return 1
-    payload = build_message(all_levels, live_prices, today if args.zero_dte else session.date())
+    day = today if args.zero_dte else session.date()
+    payload = build_message(all_levels, live_prices, day, as_of=now)
 
     status = 1 if missing else 0  # a market left out fails the run, after posting the others
     if not args.post:
@@ -391,12 +460,15 @@ def main(argv: list[str] | None = None) -> int:
     if not webhook:
         print("Set DISCORD_WEBHOOK_URL to the channel's webhook URL to post.", file=sys.stderr)
         return 1
-    post(webhook, payload)
+    # The scheduled post and 0DTE updates are always new messages; a manual post edits the day's card.
+    update = not (slot or args.zero_dte or args.new_message)
+    action, message_id = send(webhook, payload, day, paths.DATA_DIR / "levels_messages.json", update,
+                              remember=not args.zero_dte)  # a 0DTE update never becomes the day's card
     record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
-    kind = "zero-dte" if args.zero_dte else "scheduled" if slot else "manual"
-    levels_record.append(paths.DATA_DIR / "levels", today if args.zero_dte else session, now, kind,
-                         all_levels, live_prices)
-    print(f"Posted {'0DTE ' if args.zero_dte else ''}levels for {', '.join(lv.symbol for lv in all_levels)}.")
+    kind = "zero-dte" if args.zero_dte else "scheduled" if slot else "manual-edit" if action == "edited" else "manual"
+    levels_record.append(paths.DATA_DIR / "levels", day, now, kind, all_levels, live_prices, message_id)
+    print(f"{action.capitalize()} {'0DTE ' if args.zero_dte else ''}levels for "
+          f"{', '.join(lv.symbol for lv in all_levels)}.")
     return status
 
 
