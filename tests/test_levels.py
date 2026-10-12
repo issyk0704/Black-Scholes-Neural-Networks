@@ -387,6 +387,24 @@ def test_horizon_ends(session, week, month):
     assert ends == {"day": pd.Timestamp(session), "week": pd.Timestamp(week), "month": pd.Timestamp(month)}
 
 
+@pytest.mark.parametrize("taken, session", [
+    ("2026-10-12 10:35", "2026-10-12"),  # a live chain on Monday morning: Monday's levels
+    ("2026-10-09 16:30", "2026-10-12"),  # Friday after the close: Monday's
+    ("2026-10-08 16:00", "2026-10-09"),  # at the close: the next day's
+    ("2026-10-10 11:00", "2026-10-12"),  # Saturday: Monday's
+])
+def test_session_for(taken, session):
+    assert lv.session_for(pd.Timestamp(taken, tz="America/New_York")) == pd.Timestamp(session)
+
+
+def test_live_chain_without_a_date_gives_todays_levels():
+    raw = make_chain(ticker="QQQ", snapshot="2026-10-05T14:35:00+00:00", spot=100.0,  # Monday 10:35 New York
+                     expiries=("2026-10-05", "2026-10-09")).assign(futuresPrice=4150.0)
+    levels = lv.compute_levels("NQ", raw)
+    assert levels.session == pd.Timestamp("2026-10-05")
+    assert levels.horizons[0].covers == ("day",) and not levels.horizons[0].nearest_expiry
+
+
 def test_next_session_skips_the_weekend():
     assert lv.next_session("2026-10-08") == pd.Timestamp("2026-10-09")
     assert lv.next_session("2026-10-09") == pd.Timestamp("2026-10-12")

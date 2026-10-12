@@ -16,6 +16,7 @@ overnight, so the daily post swaps in the morning's (see refresh_open_interest).
 
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +83,18 @@ def horizon_ends(session) -> dict[str, pd.Timestamp]:
 def next_session(after) -> pd.Timestamp:
     """The first weekday after ``after``."""
     return pd.Timestamp(np.busday_offset(pd.Timestamp(after).date(), 1, roll="forward"))
+
+
+MARKET_CLOSE = dt.time(16, 0)  # New York
+
+
+def session_for(snapshot_time: pd.Timestamp) -> pd.Timestamp:
+    """The trading day a chain's levels are for: the snapshot's own day if it was read
+    before that day's close (a live chain), otherwise the next weekday."""
+    day = pd.Timestamp(snapshot_time.date())
+    if day.weekday() >= 5:
+        return pd.Timestamp(np.busday_offset(day.date(), 0, roll="forward"))
+    return day if snapshot_time.time() < MARKET_CLOSE else next_session(day)
 
 
 @dataclass
@@ -189,8 +202,8 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     or None if the first chain has no usable quotes or open interest.
 
     Gamma levels add up every chain; the implied moves, the futures ratio and the
-    prices come from the first. ``session`` is the trading day the levels are for
-    (by default the weekday after the snapshot); the day, week and month horizons start from it.
+    prices come from the first. ``session`` is the trading day the levels are for (by
+    default from :func:`session_for`); the day, week and month horizons start from it.
 
     ``price_now`` is the current futures price. When given, the gamma levels are measured
     there (converted at the snapshot's ratio) rather than at the snapshot's price: walls
@@ -214,7 +227,7 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
         dataset, own = dataset.assign(S=measured_at), own.assign(S=measured_at)
     gamma = analytics.gamma_levels(dataset)
     snapshot_time = pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
-    session = next_session(snapshot_time.date()) if session is None else pd.Timestamp(session).normalize()
+    session = session_for(snapshot_time) if session is None else pd.Timestamp(session).normalize()
     horizons = compute_horizons(dataset, session, moves)
     return MarketLevels(
         symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time,
