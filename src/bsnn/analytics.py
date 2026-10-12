@@ -83,7 +83,7 @@ def sessions_through(first_day, last_day) -> int:
     return max(int(np.busday_count(first, last)), 1)
 
 
-def horizon_move(moves: pd.DataFrame, first_day, last_day, min_days: float = 0.5) -> dict | None:
+def horizon_move(moves: pd.DataFrame, first_day, last_day, min_days: float = 0.02) -> dict | None:
     """The move priced over the sessions from ``first_day`` to ``last_day``, e.g. a day, a week or a month.
 
     Takes the last expiry on or before ``last_day`` (the one that spans the horizon),
@@ -92,7 +92,8 @@ def horizon_move(moves: pd.DataFrame, first_day, last_day, min_days: float = 0.5
     sessions from ``first_day``, and the horizon gets its sessions' share. So when the
     expiry falls on ``last_day`` this is exactly the move that expiry prices, and a
     Monday priced from a Friday expiry gets a fifth of that week, not the weekend's
-    share too. Expiries under ``min_days`` away (same-day ones read in the session) are skipped.
+    share too. Read during the session, today's expiry gives the move still priced to the
+    close. Expiries under ``min_days`` (about half an hour) away are skipped.
     """
     eligible = moves[moves["days"] >= min_days]
     if eligible.empty:

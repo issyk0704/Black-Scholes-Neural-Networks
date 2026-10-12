@@ -140,6 +140,7 @@ class MarketLevels:
     session: pd.Timestamp | None = None  # the trading day the levels are for
     horizons: list[HorizonLevels] = field(default_factory=list)  # today, this week, this month
     sources: tuple[str, ...] = ()  # every chain added into the levels, e.g. ("QQQ", "^NDX"); source first
+    measured_at: float = np.nan  # underlying price the gamma levels were measured at, when not the snapshot's
     own_horizons: list[HorizonLevels] = field(default_factory=list)  # source's chain alone, in its prices
 
     def in_futures(self, level: float) -> float:
@@ -183,13 +184,18 @@ def combine(dataset: pd.DataFrame, others: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timestamp | None = None,
-                   session=None, others: list[pd.DataFrame] = ()) -> MarketLevels | None:
+                   session=None, others: list[pd.DataFrame] = (), price_now: float | None = None) -> MarketLevels | None:
     """Levels from a saved chain plus ``others`` (raw chains for the same market and day),
     or None if the first chain has no usable quotes or open interest.
 
     Gamma levels add up every chain; the implied moves, the futures ratio and the
     prices come from the first. ``session`` is the trading day the levels are for
     (by default the weekday after the snapshot); the day, week and month horizons start from it.
+
+    ``price_now`` is the current futures price. When given, the gamma levels are measured
+    there (converted at the snapshot's ratio) rather than at the snapshot's price: walls
+    are the most gamma above and below where price is now, not where it closed. The
+    contracts keep their vols and times to expiry.
     """
     own = usable_dataset(raw)
     if own is None:
@@ -198,21 +204,24 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     dataset = combine(own, extra)
     moves = analytics.implied_moves(own)
     day = analytics.one_day_move(moves)
-    gamma = analytics.gamma_levels(dataset)
     inst = instruments.resolve(symbol)
     try:
         ratio = futures_ratio(inst, raw) if inst else np.nan
     except Exception:
         ratio = np.nan
+    measured_at = price_now / ratio if price_now and np.isfinite(ratio) else np.nan
+    if np.isfinite(measured_at):
+        dataset, own = dataset.assign(S=measured_at), own.assign(S=measured_at)
+    gamma = analytics.gamma_levels(dataset)
     snapshot_time = pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
     session = next_session(snapshot_time.date()) if session is None else pd.Timestamp(session).normalize()
     horizons = compute_horizons(dataset, session, moves)
     return MarketLevels(
         symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time,
-        spot=float(own["S"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
+        spot=float(raw["underlyingPrice"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan,
         open_interest_time=open_interest_time, session=session, horizons=horizons,
-        sources=tuple(d["ticker"].iloc[0] for d in [own] + extra),
+        sources=tuple(d["ticker"].iloc[0] for d in [own] + extra), measured_at=measured_at,
         own_horizons=compute_horizons(own, session, moves) if extra else horizons)
 
 
@@ -277,15 +286,24 @@ def live_zero_dte(symbol: str, prefer: str = "etf") -> ZeroDteLevels | None:
 
 
 def read_snapshot(symbol: str, source: str, path: Path, refresh_oi: bool) -> tuple[pd.DataFrame, pd.Timestamp | None]:
-    """A saved chain, with this morning's open interest when ``refresh_oi`` (see :func:`refresh_open_interest`)."""
+    """A saved chain, or with ``refresh_oi`` the freshest data there is.
+
+    The live chain is fetched: with live quotes (09:45-20:00 New York) it replaces the
+    snapshot outright, so prices, vols and open interest are all as of now. Before the
+    open its quotes are blank, so only its open interest is taken (see :func:`refresh_open_interest`).
+    """
     raw = market_data.load_option_snapshots([path])
     if not refresh_oi:
         return raw, None
     try:
-        raw, oi_time = refresh_open_interest(raw, market_data.fetch_option_chain(source, save=False))
+        live = market_data.fetch_option_chain(source, save=False)
     except Exception as exc:
         print(f"{symbol}: kept the snapshot's open interest ({source} fetch failed: {exc})", file=sys.stderr)
         return raw, None
+    if market_data.snapshot_problem(live) is None:
+        print(f"{symbol}: using the live {source} chain", file=sys.stderr)
+        return live, None
+    raw, oi_time = refresh_open_interest(raw, live)
     if oi_time is None:
         print(f"{symbol}: {source} open interest not updated yet; using the snapshot's", file=sys.stderr)
     return raw, oi_time
@@ -305,15 +323,15 @@ def same_day_chains(symbol: str, sources: list[str], day: pd.Timestamp, before, 
 
 
 def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: str = "etf",
-               refresh_oi: bool = False) -> MarketLevels | None:
+               refresh_oi: bool = False, price_now: float | None = None) -> MarketLevels | None:
     """Levels for a watchlist market from its newest usable snapshots (see :func:`option_sources`).
 
     The first source with a usable snapshot sets the prices; the other sources' chains
-    from the same day are added into the gamma levels. With ``refresh_oi``, today's
-    open interest is fetched live and replaces the snapshots' (see
-    :func:`refresh_open_interest`); prices and vols stay the snapshots'. The levels
-    are for ``before`` (rolled forward to a weekday), or for the weekday after the
-    snapshot when ``before`` isn't given.
+    from the same day are added into the gamma levels. With ``refresh_oi``, the live
+    chains are read (see :func:`read_snapshot`), and with ``price_now`` (the futures
+    price) the levels are measured at the current price (see :func:`compute_levels`).
+    The levels are for ``before`` (rolled forward to a weekday), or for the weekday
+    after the snapshot when ``before`` isn't given.
     """
     session = pd.Timestamp(np.busday_offset(pd.Timestamp(before).date(), 0, roll="forward")) if before is not None else None
     inst = instruments.resolve(symbol)
@@ -325,7 +343,7 @@ def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: 
         if path is not None:
             raw, oi_time = read_snapshot(symbol, source, path, refresh_oi)
             others = same_day_chains(symbol, sources[i + 1:], snapshot_date(path), before, directory, refresh_oi)
-            levels = compute_levels(symbol, raw, oi_time, session, others)
+            levels = compute_levels(symbol, raw, oi_time, session, others, price_now)
             if levels is not None:
                 return levels
     return None

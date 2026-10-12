@@ -68,10 +68,12 @@ def test_sessions_through_skips_weekends():
     assert analytics.sessions_through("2026-10-10", "2026-10-10") == 1  # a Saturday still counts as one
 
 
-def test_horizon_move_skips_an_expiry_hours_away(flat):
-    moves = analytics.implied_moves(flat).assign(days=[0.2, 30, 60, 90])
-    assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[3])["expiry"] == moves["expiry"].iloc[3]
+def test_horizon_move_uses_todays_expiry_until_its_last_half_hour(flat):
+    moves = analytics.implied_moves(flat).assign(days=[0.25, 30, 60, 90])  # six hours to today's close
+    assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[0])["expiry"] == moves["expiry"].iloc[0]
+    moves = moves.assign(days=[0.01, 30, 60, 90])  # a quarter of an hour left
     assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[0])["expiry"] == moves["expiry"].iloc[1]
+    assert analytics.horizon_move(moves, SNAPSHOT_DAY, moves["expiry"].iloc[3])["expiry"] == moves["expiry"].iloc[3]
 
 
 def test_in_units_of_keeps_dollar_gamma(flat):

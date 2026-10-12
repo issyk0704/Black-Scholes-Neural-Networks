@@ -175,6 +175,21 @@ def test_card_lists_the_etfs_own_levels():
     assert "\nDIA: flip 748.31 · CW 760 · PW 750\n" in single["fields"][0]["value"]
 
 
+def test_card_says_where_the_levels_were_measured():
+    card = levels_cli.market_embed(sample_levels(source="QQQ", ratio=41.4, measured_at=745.74), 30_900.0)
+    assert card["description"].endswith("Levels measured at NQ 30,874 (QQQ 745.74), the price when posted.")
+    assert "Levels measured" not in levels_cli.market_embed(sample_levels(), None)["description"]
+
+
+def test_daily_levels_are_measured_at_the_futures_price(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(levels_cli, "levels_for",
+                        lambda symbol, before, prefer, **kw: seen.update({symbol: kw["price_now"]}))
+    monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 30_882.25)
+    levels_cli.main(["--markets", "NQ"])
+    assert seen == {"NQ": 30_882.25}
+
+
 def test_three_markets_fit_in_one_message():
     payload = levels_cli.build_message([sample_levels(symbol=s, sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS)
                                         for s in ("NQ", "ES", "YM")],
@@ -440,6 +455,26 @@ def test_levels_add_up_every_chain_in_the_first_chains_prices():
     assert both.horizons[1].flip == pytest.approx(alone.horizons[1].flip, rel=1e-3)
     assert [h.net_gamma for h in both.own_horizons] == [h.net_gamma for h in alone.horizons]
     assert alone.sources == ("QQQ",) and alone.own_horizons is alone.horizons
+
+
+def test_levels_are_measured_at_the_current_price():
+    at_close = lv.compute_levels("NQ", horizon_chain())  # QQQ 100, NQ 4,150 at the snapshot
+    lower = lv.compute_levels("NQ", horizon_chain(), price_now=4150.0 * 0.98)  # NQ has since fallen 2%
+    assert np.isnan(at_close.measured_at) and lower.measured_at == pytest.approx(98.0)
+    assert lower.spot == pytest.approx(100.0)  # the snapshot's price is still reported as such
+    for h in lower.horizons + lower.own_horizons:
+        assert not h.put_wall >= 98.0 and not h.call_wall <= 98.0  # a wall may be "none" (NaN), never on the wrong side
+    assert lower.horizons[1].call_wall < at_close.horizons[1].call_wall  # the call wall follows price down
+
+
+def test_live_chain_with_quotes_replaces_the_snapshot(snapshots):
+    live = make_chain(ticker="QQQ", snapshot="2026-10-08T15:30:00+00:00", spot=103.0,  # 11:30 New York
+                      expiries=("2026-10-16", "2026-11-20"))
+    with patch.object(lv, "futures_ratio", return_value=41.5), \
+         patch.object(lv.market_data, "fetch_option_chain", return_value=live):
+        levels = lv.levels_for("NQ", before="2026-10-08", directory=snapshots, refresh_oi=True)
+    assert levels.spot == pytest.approx(103.0) and levels.open_interest_time is None
+    assert levels.snapshot_time == pd.Timestamp("2026-10-08 11:30", tz="America/New_York")
 
 
 def test_levels_for_adds_the_index_chain_from_the_same_day(tmp_path):

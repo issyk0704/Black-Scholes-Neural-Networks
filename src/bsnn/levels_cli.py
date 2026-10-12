@@ -143,6 +143,12 @@ def _own_line(levels: MarketLevels, h: HorizonLevels) -> str | None:
             f"· PW {_option_price(own.put_wall)}")
 
 
+def _measured_at(levels: MarketLevels) -> str:
+    """E.g. "NQ 30,882 (QQQ 745.74)"."""
+    return (f"{levels.symbol} {levels.in_futures(levels.measured_at):,.0f} "
+            f"({levels.source.lstrip('^')} {levels.measured_at:,.2f})")
+
+
 def _sources(levels: MarketLevels) -> str:
     """The chains in the levels, e.g. "QQQ + NDX"."""
     return " + ".join(s.lstrip("^") for s in levels.sources or (levels.source,))
@@ -182,6 +188,8 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
         description = (f"Open interest as of {oi:%H:%M} New York, {oi:%a %d %b} (includes {taken:%a}'s full session); "
                        f"prices and vols from {source} options at {taken:%H:%M} New York, {taken:%a %d %b} "
                        f"({_price_then(levels)} then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+    if np.isfinite(levels.measured_at):
+        description += f" Levels measured at {_measured_at(levels)}, the price when posted."
     return {
         "title": f"{levels.symbol} options levels",
         "description": description,
@@ -227,7 +235,7 @@ def zero_dte_embed(levels: ZeroDteLevels, live_price: float | None) -> dict:
 DAILY_FOOTER = ("Each column uses only the options expiring by its end, adding up index and ETF options (NDX + QQQ, "
                 "SPX + SPY; DIA for YM); the ETF line gives the ETF's own levels in its prices. Positive gamma: "
                 "dealers tend to sell rallies and buy dips; negative: they chase moves. Call wall: most call gamma "
-                "above price then; put wall: most put gamma below. 1σ: the move the options price to the column's "
+                "above the price the levels were measured at; put wall: most put gamma below. 1σ: the move the options price to the column's "
                 "end, around the current futures price (about 68% of closes land inside). Converted to futures at "
                 "the futures/ETF price ratio when the options were read. Gamma assumes dealers are long customers' "
                 "calls and short their puts. Context, not signals.")
@@ -265,9 +273,9 @@ RETRY_WAIT_SECONDS = 120
 
 
 def gather_with_retries(markets: list[str], zero_dte: bool, source: str,
-                        before: dt.date | None) -> tuple[list, list[str]]:
+                        before: dt.date | None, prices: dict[str, float] | None = None) -> tuple[list, list[str]]:
     """Like :func:`gather`, but 0DTE reads retry the markets that had no usable quotes."""
-    found, missing = gather(markets, zero_dte, source, before)
+    found, missing = gather(markets, zero_dte, source, before, prices)
     for _ in range(ZERO_DTE_RETRIES if zero_dte else 0):
         if not missing:
             break
@@ -279,12 +287,15 @@ def gather_with_retries(markets: list[str], zero_dte: bool, source: str,
     return found, missing
 
 
-def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | None) -> tuple[list, list[str]]:
+def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | None,
+           prices: dict[str, float] | None = None) -> tuple[list, list[str]]:
+    """Each market's levels; daily levels are measured at the futures price in ``prices``."""
     found, missing = [], []
     for symbol in markets:
         try:
             levels = (live_zero_dte(symbol, source) if zero_dte
-                      else levels_for(symbol, before=before, prefer=source, refresh_oi=True))
+                      else levels_for(symbol, before=before, prefer=source, refresh_oi=True,
+                                      price_now=(prices or {}).get(symbol)))
         except Exception as exc:
             print(f"{symbol}: {exc}", file=sys.stderr)
             levels = None
@@ -293,6 +304,19 @@ def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | No
         else:
             missing.append(symbol)
     return found, missing
+
+
+def current_prices(markets: list[str]) -> dict[str, float]:
+    """The latest futures price for each market; one that can't be fetched is left out
+    (its card then measures levels at the snapshot's price and shows no range around price)."""
+    prices = {}
+    for symbol in markets:
+        inst = instruments.resolve(symbol)
+        try:
+            prices[symbol] = market_data.latest_price(inst.price_ticker)
+        except Exception as exc:
+            print(f"{symbol}: no current price ({exc})", file=sys.stderr)
+    return prices
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -322,20 +346,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     markets = [s.upper() for s in args.markets]
+    live_prices = current_prices(markets)
     all_levels, missing = gather_with_retries(markets, args.zero_dte, args.source,
-                                              before=None if args.include_today else today)
+                                              before=None if args.include_today else today, prices=live_prices)
     if missing:
         print(f"No usable data for: {', '.join(missing)}", file=sys.stderr)
     if not all_levels:
         print("Nothing to post.", file=sys.stderr)
         return 1
-
-    live_prices = {}
-    for lv in all_levels:
-        try:
-            live_prices[lv.symbol] = market_data.latest_price(instruments.resolve(lv.symbol).price_ticker)
-        except Exception:
-            pass  # the card just leaves out the range around the current price
     payload = build_message(all_levels, live_prices, today)
 
     if not args.post:
