@@ -74,16 +74,25 @@ interest is only published during and after the US session, so fetch chains afte
 
 ### Posting the levels to Discord
 
-`bsnn-levels` turns the newest saved snapshot from before today into one Discord card per market
-(NQ from QQQ, ES from SPY, YM from DIA by default). Each card has three columns, **today**, **this
-week** (to Friday) and **this month** (to its last weekday), and each column shows:
+`bsnn-levels` turns the newest saved snapshots from before today into one Discord card per market.
+The gamma levels add up the index and ETF options of the same day: **NQ from NDX + QQQ, ES from
+SPX + SPY, YM from DIA** (Yahoo's Dow index options are too thin). SPX alone holds about 90% of
+S&P 500 options notional, so ES levels from SPY by itself missed most of the positioning. The index
+chain is restated in the ETF's prices (strikes × ETF/index, with the contract size scaled the
+other way so each contract keeps its dollar gamma), then the levels convert to futures at the
+futures/ETF ratio. Each card has three columns, **today**, **this week** (to Friday) and **this
+month** (to its last weekday), and each column shows:
 
 - the gamma regime, gamma flip, call wall and put wall in futures points, from **only the options
   expiring by the end of that column**. That is the positioning dealers must hedge before that
   candle closes; longer-dated options belong to the later columns;
-- the one-standard-deviation move over the column's trading days, as a range around the current
-  futures price: the ATM vol of the expiry that spans the horizon × √(trading days ÷ 252). For
-  today it's the one-day move.
+- the ETF's own flip and walls, in ETF prices (e.g. `QQQ alone: flip 748.23 · CW 760 · PW 750`);
+- the one-standard-deviation move to the column's end, as a range around the current futures
+  price. It uses the expiry that spans the horizon: its total implied variance (ATM vol² × time,
+  weekends included) shared equally among its sessions, of which the column takes its own. When
+  the column ends on that expiry, this is exactly the move the expiry prices (a Monday expiry
+  priced on Friday includes the weekend); DIA, which has no daily expiries, gives Monday a fifth
+  of Friday's weekly move.
 
 When two columns end on the same day (today and this week on a Friday) they share one. Gamma
 levels describe the size and character of the moves dealers' hedging encourages, not their
@@ -97,7 +106,7 @@ reliable quotes before the open. If the morning's figures aren't out yet, it kee
 .\.venv\Scripts\bsnn-levels.exe                        # print the message as JSON; nothing is sent
 $env:DISCORD_WEBHOOK_URL = "<your webhook URL>"        # the channel's webhook (keep it secret)
 .\.venv\Scripts\bsnn-levels.exe --post                 # send it
-.\.venv\Scripts\bsnn-levels.exe --post --source index  # use NDX/SPX options instead of QQQ/SPY
+.\.venv\Scripts\bsnn-levels.exe --post --source index  # state the levels in NDX/SPX prices instead
 ```
 
 `bsnn-levels --zero-dte --post` reads live chains instead and posts **0DTE** levels by hand (they
