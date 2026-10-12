@@ -104,13 +104,39 @@ where it closed. During US hours (09:45-20:00 New York) the card reads the live 
 so prices, vols and open interest are all current, and today's 1σ is the move still priced to the
 close. Before the open, quotes are blank, so it uses the last snapshot's prices and vols with this
 morning's open interest (published overnight, so it includes the previous session's full trading);
-if the morning's figures aren't out yet, it keeps the snapshot's.
+if the morning's figures aren't out yet, it keeps the snapshot's. The posting day follows the
+clock: before the 16:00 close it's today, after it the next weekday.
+
+**Checks before posting.** A card is only posted if it passes rules that hold whatever the market
+does (`levels_checks.py`): it's for the day being posted, from a snapshot at most four days old,
+with every chain its market should have, measured at the current futures price, with call walls
+above that price and put walls below it, and a 1σ of a sane size that widens from day to week to
+month. A market that fails is left out with the reasons, the others are posted, and the run fails,
+so a problem shows as a red run rather than a wrong card.
+
+**One card a day.** The 09:15 post starts the day's card. A manual post then **edits that card in
+place**, with "as of HH:MM New York" in its heading, so a correction or an intraday refresh doesn't
+add a message; `--new-message` posts a separate card instead (later edits update that one). 0DTE
+updates are always separate messages.
+
+**A record of every post.** Each post appends one JSON line to `data/levels/<day>.jsonl` with
+every level (in the ETF's prices and in futures points), the 1σ range and the inputs behind them.
+The cloud workflow commits it to the data repository, building the history for scoring how often
+walls hold and closes land inside the range.
 
 ```powershell
 .\.venv\Scripts\bsnn-levels.exe                        # print the message as JSON; nothing is sent
 $env:DISCORD_WEBHOOK_URL = "<your webhook URL>"        # the channel's webhook (keep it secret)
-.\.venv\Scripts\bsnn-levels.exe --post                 # send it
+.\.venv\Scripts\bsnn-levels.exe --post                 # post, or update today's card if there is one
+.\.venv\Scripts\bsnn-levels.exe --post --new-message   # post a separate card
 .\.venv\Scripts\bsnn-levels.exe --post --source index  # state the levels in NDX/SPX prices instead
+```
+
+To post from the cloud at any time (no laptop needed), start the data repository's workflow:
+
+```powershell
+& "C:\Program Files\GitHub CLI\gh.exe" workflow run levels.yml -R issyk0704/bsnn-data -f post_now=true
+& "C:\Program Files\GitHub CLI\gh.exe" workflow run levels.yml -R issyk0704/bsnn-data -f post_now=true -f new_message=true
 ```
 
 `bsnn-levels --zero-dte --post` reads live chains instead and posts **0DTE** levels by hand (they
