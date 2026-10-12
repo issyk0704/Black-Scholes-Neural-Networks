@@ -4,6 +4,8 @@ Only the network is faked: Yahoo (option chains and futures prices) and Discord.
 These are the two ways the card is really made, so a bug in either path fails here.
 """
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -64,6 +66,14 @@ def test_morning_post_uses_fridays_prices_with_this_mornings_open_interest(home,
     assert "Levels measured at NQ 4,129 (QQQ 99.50)" in card["description"]
     assert [f["name"] for f in card["fields"]] == ["Today", "This week (to Fri 09 Oct)", "This month (to Fri 30 Oct)"]
     assert (tmp_path / "levels_posted.txt").read_text().strip() == "2026-10-05 daily"
+    (record,) = [json.loads(line) for line in (tmp_path / "levels" / "2026-10-05.jsonl").read_text().splitlines()]
+    assert record["kind"] == "scheduled" and record["posted_at"].startswith("2026-10-05T13:15")
+    (nq,) = record["markets"]
+    assert nq["sources"] == ["QQQ", "^NDX"] and nq["measured_at"] == pytest.approx(99.5)
+    assert nq["open_interest_time"].startswith("2026-10-05T09:15")
+    today = nq["horizons"][0]
+    assert today["call_wall_futures"] == pytest.approx(today["call_wall"] * RATIO)
+    assert today["range_low"] < RATIO * 99.5 < today["range_high"]
 
 
 def test_manual_post_in_the_session_reads_the_live_chains_for_today(home, monkeypatch):

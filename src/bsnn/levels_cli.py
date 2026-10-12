@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bsnn import __version__, instruments, levels_checks, market_data, paths
+from bsnn import __version__, instruments, levels_checks, levels_record, market_data, paths
 from bsnn.levels import (DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for,
                          live_zero_dte, session_for)
 
@@ -393,6 +393,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     post(webhook, payload)
     record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
+    kind = "zero-dte" if args.zero_dte else "scheduled" if slot else "manual"
+    levels_record.append(paths.DATA_DIR / "levels", today if args.zero_dte else session, now, kind,
+                         all_levels, live_prices)
     print(f"Posted {'0DTE ' if args.zero_dte else ''}levels for {', '.join(lv.symbol for lv in all_levels)}.")
     return status
 
