@@ -191,9 +191,47 @@ bundled seed snapshots (plain `.csv`) are committed.
 
 ## Results
 
-There are 25,915 quoted contracts across SPY, QQQ, AAPL and NVDA from snapshots taken on
-7 May 2024, 14 Jan 2025 and 5 Oct 2026. Every number below is on contracts the model never saw.
-"Inside bid-ask" is the share of prices that land between the bid and the ask.
+Every number below is on contracts the model never saw. "Inside bid-ask" is the share of prices that
+land between the bid and the ask. With SPX options in the test set, dollar errors are dominated by a
+few contracts priced in the hundreds, so the median % error and the inside-bid-ask share compare the
+models more fairly.
+
+### The next day, five asset classes (21 Oct 2026)
+
+476,324 quoted contracts from 168 snapshots on 14 days (May 2024 to 20 Oct 2026): the 15 collected
+underlyings (SPX, NDX, RUT and the ETF proxies for indexes, metals, bonds and FX) plus the earlier
+stock and ETF chains. Trained on every snapshot up to 19 Oct (370,926 contracts), tested on all 40,347
+contracts from 20 Oct. The test and the rule for the asset-class input (on by default only if it
+lowers the overall error and is no worse in most asset classes) were fixed before the runs.
+
+| Model | MAE ($) | RMSE ($) | Median abs error | Inside bid-ask |
+|---|---:|---:|---:|---:|
+| **Neural net: smile, ATM vol, asset class** | **11.37** | 55.00 | **4.0%** | **30.1%** |
+| Neural net: smile, ATM vol | 12.27 | **54.28** | 5.0% | 23.3% |
+| Black-Scholes, ATM implied vol | 19.15 | 65.05 | 9.6% | 13.1% |
+| Black-Scholes, 30-day historical vol | 35.60 | 99.04 | 28.7% | 7.4% |
+
+**By asset class** (median abs error / inside bid-ask):
+
+| Asset class | Test contracts | Net, asset class | Net | Black-Scholes, ATM vol |
+|---|---:|---|---|---|
+| Equity index | 34,403 | **4.6% / 24.6%** | 5.2% / 21.1% | 11.7% / 9.1% |
+| Metals | 4,222 | **1.8% / 62.8%** | 4.1% / 32.9% | 3.1% / 38.8% |
+| Rates | 1,687 | **2.4% / 60.2%** | 4.8% / 44.2% | 6.0% / 30.1% |
+| FX | 35 | **3.5% / 77.1%** | 5.5% / 65.7% | 14.7% / 54.3% |
+
+- **Telling the network the asset class pays off once the data spans several classes.** Without it, a
+  net trained mostly on equity indexes (402,000 of the 476,000 contracts) gave metals the equity
+  smile's shape and lost to Black-Scholes there. With it, metals went from 4.1% to 1.8% median error,
+  and every class improved. It is now on by default (`--no-asset-class` turns it off). The largest
+  errors grew slightly (RMSE 55.00 against 54.28, from big SPX contracts).
+- FX has only 35 test contracts (UUP, FXE and FXB have thin chains), too few to read much into.
+- Both runs used seed 42 and all 300 epochs (validation loss flat for the last ~50).
+
+### The first test (6 Oct 2026)
+
+There were 25,915 quoted contracts across SPY, QQQ, AAPL and NVDA from snapshots taken on
+7 May 2024, 14 Jan 2025 and 5 Oct 2026.
 
 **Out of time: trained on 2024/2025, tested on all 13,531 contracts from 5 Oct 2026**
 
@@ -230,7 +268,7 @@ What this shows:
   volatility, which is why every model using the expiry's ATM implied vol does better.
 
 All numbers come from a single run with seed 42 (`bsnn-train --split date` and `bsnn-train`, adding
-`--kind` and `--hist-vol` for the other rows). With other seeds, the network's figures and the
+`--kind` and `--hist-vol` for the other rows; there was no asset-class input then). With other seeds, the network's figures and the
 expiries chosen for the random split will change.
 
 ## How the models work
@@ -276,7 +314,8 @@ bsnn                            # launch the app (or: python -m bsnn)
 
 To get going:
 
-1. **Neural network** tab: press **Train** (about a minute on a laptop CPU), then **Save current model**.
+1. **Neural network** tab: press **Train** (about 15 minutes on a laptop CPU with the October 2026 data;
+   tick fewer snapshots for a quicker run), then **Save current model**.
    The newest saved model loads automatically the next time you start the app.
 2. **Option chain** tab: pick a ticker and press **Fetch live chain** to price today's quotes.
    Each fetch is saved to `data/options/` and becomes available for training.
@@ -287,14 +326,13 @@ Training from the command line, for repeatable experiments:
 bsnn-train                              # smile model, ATM vol, random-expiry split
 bsnn-train --split date --save          # train on older snapshots, test on the newest; keep the model
 bsnn-train --kind price --hist-vol      # the direct-price baseline
-bsnn-train --asset-class                # tell the network each contract's asset class
+bsnn-train --no-asset-class             # without each contract's asset class (on by default)
 bsnn-train --help
 ```
 
 With snapshots from more than one asset class, `bsnn-train` also prints the results for each class.
-The `--asset-class` option is off by default. On the equity-only data available in October 2026 it
-made results slightly worse (average error $1.87 against $1.61), but it should be re-tested once the
-collector has gathered metals and bond chains.
+The asset-class input is on by default since 21 Oct 2026 (see Results). On the equity-only data of
+6 Oct it had made results slightly worse (average error $1.87 against $1.61).
 
 Run the tests with `pytest`. The GUI tests need a display, or `QT_QPA_PLATFORM=offscreen`.
 
