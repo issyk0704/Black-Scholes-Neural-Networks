@@ -3,6 +3,7 @@
     bsnn-train                          # smile model, ATM vol, random-expiry split
     bsnn-train --split date --save      # train on older snapshots, test on the newest; keep the model
     bsnn-train --kind price --hist-vol --tickers SPY QQQ
+    bsnn-train --no-asset-class         # without each contract's asset class
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--split", choices=list(SPLITS), default=TrainConfig.split)
     parser.add_argument("--hist-vol", action="store_true",
                         help="use 30-day historical vol instead of the expiry's ATM implied vol")
-    parser.add_argument("--asset-class", action="store_true",
-                        help="give the network each contract's asset class (equity index, rates, metals, ...)")
+    parser.add_argument("--asset-class", action=argparse.BooleanOptionalAction, default=TrainConfig.use_asset_class,
+                        help="give the network each contract's asset class (equity index, rates, metals, ...); on by default")
     parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     parser.add_argument("--layers", type=int, nargs="+", default=list(TrainConfig.hidden_layers))
     parser.add_argument("--seed", type=int, default=TrainConfig.seed)

@@ -58,9 +58,9 @@ def _keras():
 class TrainConfig:
     kind: str = "smile"
     use_atm_iv: bool = True
-    # Off by default: on equity-only data it made results slightly worse (Oct 2026). Worth
-    # re-testing once collected snapshots cover several asset classes.
-    use_asset_class: bool = False
+    # On by default since 21 Oct 2026: tested on the next day (20 Oct) across five asset classes, it
+    # cut the error in every class (on the equity-only data of 6 Oct it had made results slightly worse).
+    use_asset_class: bool = True
     hidden_layers: tuple[int, ...] = (64, 64, 64)
     epochs: int = 300
     batch_size: int = 256
