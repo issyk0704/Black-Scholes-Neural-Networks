@@ -130,6 +130,14 @@ def test_snapshot_problem_checks_trading_hours(chain, snapshot, ok):
     assert (md.snapshot_problem(chain.assign(snapshotTime=snapshot)) is None) is ok
 
 
+def test_a_thin_proxy_chain_is_kept_but_a_blanked_one_is_not(chain):
+    inside = chain.assign(snapshotTime="2026-10-20T20:30:00+00:00")    # Tuesday 16:30 New York
+    thin = inside.copy()
+    thin.loc[thin.index[: int(len(thin) * 0.55)], "bid"] = 0.0           # 45% quoted, as UUP on 20 Oct 2026
+    assert md.snapshot_problem(thin) is None
+    assert "live quote" in md.snapshot_problem(inside.assign(bid=0.0))
+
+
 def test_live_quote_share(chain):
     assert md.live_quote_share(chain) == 1.0
     assert md.live_quote_share(chain.assign(bid=0.0)) == 0.0

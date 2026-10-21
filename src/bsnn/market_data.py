@@ -313,7 +313,9 @@ def _live_price(tk, history: pd.DataFrame) -> float:
     return float(history["Close"].iloc[-1])
 
 
-MIN_LIVE_SHARE = 0.5  # below this, a chain was fetched outside US hours or on a holiday
+# Below this, a chain was fetched outside US hours or on a holiday (Yahoo blanks the quotes, ~0%). Thin proxies
+# such as UUP, FXE and FXB quote only 45-70% of their contracts on a normal day; build_dataset drops the rest.
+MIN_LIVE_SHARE = 0.25
 # New York times. The collector runs inside the session, away from the open and close.
 SESSION_START, SESSION_END = dt.time(9, 45), dt.time(15, 55)
 # Quotes stay at their closing values after 16:00 until SPX's overnight session starts at 20:15,
