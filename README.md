@@ -161,7 +161,9 @@ saves a snapshot of every proxy's chain and of the SPX, NDX and RUT index chains
 refuses to save a chain fetched outside those hours. It runs from 09:45 to 20:00 New York (after the
 close, quotes hold their closing values until 20:00; the cloud job runs at 16:30 so each snapshot
 covers the whole session) and skips any chain
-where fewer than half the contracts have a live quote, which catches holidays and stale data.
+where fewer than a quarter of the contracts have a live quote, which catches holidays and stale data
+(Yahoo blanks the quotes then). Thin proxies such as UUP quote only about half their contracts on a normal day;
+the unquoted ones are dropped when the training set is built.
 To run it every weekday at 19:30 UK, from the repository root in PowerShell:
 
 ```powershell
