@@ -81,7 +81,7 @@ def test_scores_are_saved_once_and_kept(tmp_path):
     first = sc.update_scores(store, records, bars_for)
     assert len(first) == 1 and first["ceiling_held"].iloc[0] == 1.0 and store.exists()
     again = sc.update_scores(store, records, bars_for)  # nothing new to score: no download
-    assert len(again) == 1 and calls == ["NQ"]
+    assert len(again) == 1 and calls == ["NQ=F"]  # no contract recorded: the continuous symbol
 
 
 def test_a_failed_download_leaves_the_scores_as_they_were(tmp_path):

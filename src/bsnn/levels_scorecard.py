@@ -49,7 +49,9 @@ def morning_cards(directory: Path) -> pd.DataFrame:
                 continue
             for m in record["markets"]:
                 for h in m["horizons"]:
-                    rows.append({"session": m["session"], "symbol": m["symbol"], "covers": "+".join(h["covers"]),
+                    ticker = m.get("futures_ticker") or instruments.resolve(m["symbol"]).price_ticker
+                    rows.append({"session": m["session"], "symbol": m["symbol"], "ticker": ticker,
+                                 "covers": "+".join(h["covers"]),
                                  "end": h["end"], "price": m["futures_price"], "move_pct": h["move_pct"],
                                  "ceiling": h["call_wall_futures"], "floor": h["put_wall_futures"]})
             break  # the first scheduled card of the day
@@ -59,11 +61,10 @@ def morning_cards(directory: Path) -> pd.DataFrame:
 
 # --- Prices ------------------------------------------------------------------------
 
-def fetch_bars(symbol: str) -> pd.DataFrame:
-    """The last 60 days of 5-minute futures bars in the New York cash session."""
+def fetch_bars(ticker: str) -> pd.DataFrame:
+    """The last 60 days of 5-minute bars of a futures symbol (e.g. NQZ26.CME) in the New York cash session."""
     import yfinance as yf
 
-    ticker = instruments.resolve(symbol).price_ticker
     bars = yf.Ticker(ticker).history(period="60d", interval="5m", auto_adjust=False)
     bars.index = bars.index.tz_convert(market_data.MARKET_TZ)
     return bars.between_time(SESSION_OPEN, SESSION_CLOSE)[["High", "Low", "Close"]]
@@ -111,7 +112,7 @@ def score_card(card: pd.Series, bars: pd.DataFrame) -> dict | None:
 
 def update_scores(store: Path, records: Path, bars_for=None) -> pd.DataFrame:
     """Score every finished card column not yet in ``store``, save, and return all scores.
-    ``bars_for(symbol)`` gives the bars (default :func:`fetch_bars`)."""
+    ``bars_for(ticker)`` gives the bars of the contract a card was posted in (default :func:`fetch_bars`)."""
     bars_for = bars_for or fetch_bars
     scores = pd.read_csv(store, dtype={"session": str, "end": str}) if store.exists() else pd.DataFrame(columns=COLUMNS)
     cards = morning_cards(records)
@@ -119,11 +120,11 @@ def update_scores(store: Path, records: Path, bars_for=None) -> pd.DataFrame:
         done = set(map(tuple, scores[KEY].astype(str).to_numpy()))
         todo = cards[[tuple(map(str, k)) not in done for k in cards[KEY].to_numpy()]]
         new = []
-        for symbol, group in todo.groupby("symbol"):
+        for ticker, group in todo.groupby("ticker"):
             try:
-                bars = bars_for(symbol)
+                bars = bars_for(ticker)
             except Exception as exc:
-                print(f"Scorecard: no {symbol} bars ({exc})", file=sys.stderr)
+                print(f"Scorecard: no {ticker} bars ({exc})", file=sys.stderr)
                 continue
             new += [s for s in (score_card(card, bars) for _, card in group.iterrows()) if s]
         if new:
