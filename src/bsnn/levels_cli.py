@@ -48,7 +48,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bsnn import __version__, instruments, levels_checks, levels_record, market_data, paths
+from bsnn import __version__, instruments, levels_checks, levels_record, levels_scorecard, market_data, paths
 from bsnn.levels import (DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for,
                          live_zero_dte, session_for)
 
@@ -291,13 +291,16 @@ ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live price
 
 
 def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float], today: dt.date,
-                  as_of: pd.Timestamp | None = None) -> dict:
-    """The full webhook payload: a heading (with the New York time ``as_of``, if given) plus one card per market."""
+                  as_of: pd.Timestamp | None = None, review: dict | None = None) -> dict:
+    """The full webhook payload: a heading (with the New York time ``as_of``, if given), one card per
+    market and, on the week's or month's first card, the ``review`` scorecard last."""
     zero_dte = bool(all_levels) and isinstance(all_levels[0], ZeroDteLevels)
     make = zero_dte_embed if zero_dte else market_embed
     embeds = [make(lv, live_prices.get(lv.symbol)) for lv in all_levels]
     if embeds:
         embeds[-1]["footer"] = {"text": ZERO_DTE_FOOTER if zero_dte else DAILY_FOOTER}
+    if review:
+        embeds.append(review)
     if zero_dte:
         heading = f"**0DTE gamma update · {all_levels[0].snapshot_time:%H:%M} New York, {today:%a %d %b}**"
     else:
@@ -443,6 +446,18 @@ def checked(all_levels: list[MarketLevels], session: pd.Timestamp, prefer: str) 
     return passed, failed
 
 
+def scorecard(session: pd.Timestamp) -> dict | None:
+    """Scores the finished morning cards (every day, so none age out of Yahoo's 60 days) and returns
+    last week's or month's scorecard on the card that reviews it. A failure only leaves it out."""
+    try:
+        scores = levels_scorecard.update_scores(paths.DATA_DIR / "levels_scores.csv", paths.DATA_DIR / "levels")
+        period = levels_scorecard.scorecard_period(session)
+        return levels_scorecard.scorecard_embed(scores, *period) if period else None
+    except Exception as exc:
+        print(f"Scorecard left out: {exc}", file=sys.stderr)
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Post options levels for NQ, ES and YM to Discord.")
     parser.add_argument("--markets", nargs="+", default=list(DEFAULT_MARKETS), help="watchlist symbols")
@@ -485,7 +500,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Nothing to post.", file=sys.stderr)
         return 1
     day = today if args.zero_dte else session.date()
-    payload = build_message(all_levels, live_prices, day, as_of=now)
+    review = None if args.zero_dte else scorecard(session)
+    payload = build_message(all_levels, live_prices, day, as_of=now, review=review)
 
     status = 1 if missing else 0  # a market left out fails the run, after posting the others
     if not args.post:

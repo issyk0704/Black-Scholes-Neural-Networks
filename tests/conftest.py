@@ -2,7 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bsnn import pricing
+from bsnn import levels_scorecard, pricing
+
+
+@pytest.fixture(autouse=True)
+def no_scorecard_downloads(monkeypatch):
+    """Tests never download futures bars for the scorecard; a test that needs bars passes its own."""
+    monkeypatch.setattr(levels_scorecard, "fetch_bars", lambda symbol: pd.DataFrame(columns=["High", "Low", "Close"]))
 
 
 @pytest.fixture
