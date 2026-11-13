@@ -1,4 +1,5 @@
 import json
+import pytest
 
 import numpy as np
 import pandas as pd
@@ -22,3 +23,5 @@ def test_each_post_appends_a_line_with_missing_values_as_null(tmp_path):
     assert column["flip"] is None and column["put_wall"] is None and column["put_wall_futures"] is None
     assert column["call_wall_futures"] == 760.0 * 41.4
     assert (column["range_low"], column["range_high"]) == (30_843.0 - 308.43, 30_843.0 + 308.43)
+    assert column["expected_low"] == pytest.approx(30_843.0 - 308.43 * 0.79788, abs=0.01)
+    assert column["expected_high"] == pytest.approx(30_843.0 + 308.43 * 0.79788, abs=0.01)

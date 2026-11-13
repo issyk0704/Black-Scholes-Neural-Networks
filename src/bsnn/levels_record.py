@@ -2,7 +2,7 @@
 
 Each post appends one JSON line to ``data/levels/<posting day>.jsonl``: when and
 how it was posted, and for each market every level in the option underlying's
-prices and in futures points, the 1σ range, and the inputs behind them. The
+prices and in futures points, the 1σ (outer) and expected ranges, and the inputs behind them. The
 scheduled workflow commits the folder to bsnn-data, so the history builds up
 there. Missing values (a wall "none within ±15%") are stored as null.
 """
@@ -13,9 +13,13 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from bsnn.levels import HorizonLevels, MarketLevels
+
+# The straddle prices the average move, sqrt(2/pi) of one standard deviation.
+STRADDLE_SHARE = float(np.sqrt(2 / np.pi))
 
 
 def _number(value) -> float | None:
@@ -36,6 +40,9 @@ def horizon_record(h: HorizonLevels, levels: MarketLevels, price: float | None) 
         record[f"{name}_futures"] = _number(levels.in_futures(getattr(h, name)))
     move = price * h.move_pct if price else math.nan
     record["range_low"], record["range_high"] = _number(price - move) if price else None, _number(price + move) if price else None
+    expected = move * STRADDLE_SHARE
+    record["expected_low"] = _number(price - expected) if price else None
+    record["expected_high"] = _number(price + expected) if price else None
     return record
 
 

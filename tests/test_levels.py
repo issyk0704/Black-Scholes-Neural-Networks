@@ -147,17 +147,17 @@ def test_message_is_webhook_ready_json():
     json.dumps(payload)  # serialisable
     nq, es = payload["embeds"]
     assert nq["color"] == levels_cli.POSITIVE and es["color"] == levels_cli.NEGATIVE
-    assert "at 14:30 New York, Mon 05 Oct (NDX 24,000.00 ≈ NQ 31,200 then)" in nq["description"]
-    assert "Net gamma, all expiries: +5.10bn" in nq["description"]
+    assert nq["description"] == "NDX options read Mon 05 Oct 14:30 New York (NDX 24,000.00 ≈ NQ 31,200 then)."
     today, week, month = nq["fields"]
     assert all(f["inline"] for f in nq["fields"])  # side by side
     assert today["name"] == "Today" and week["name"] == "This week (to Fri 09 Oct)"
     assert month["name"] == "This month (to Fri 30 Oct)"
-    assert today["value"].split("\n") == ["Positive gamma: damping", "Flip **30,810**", "Call wall **31,460**",
-                                           "Put wall **30,940**", "1σ **31,080 – 31,720** (±320)"]
-    assert week["value"].startswith("Negative gamma: amplifying")
+    assert today["value"].split("\n") == [levels_cli.CALM, "Ceiling **31,460**", "Floor **30,940**",
+                                           "Pivot **30,810**", "Expected **31,144 – 31,656** (±256)",
+                                           "Outer **31,080 – 31,720** (±320)"]
+    assert week["value"].startswith(levels_cli.FAST)
     assert month["value"].endswith("Nothing expires by then: uses Fri 06 Nov")
-    assert "1σ ±2.04%" in es["fields"][1]["value"] and "footer" in es  # no live price for ES; footer on the last card
+    assert "Expected ±1.63% · Outer ±2.04%" in es["fields"][1]["value"] and "footer" in es  # no live price for ES; footer on the last card
     assert len(json.dumps(payload)) < 6000  # Discord's limit for a message's embeds
 
 
@@ -168,17 +168,17 @@ OWN_HORIZONS = [lv.HorizonLevels(**(vars(h) | {"flip": 748.31, "call_wall": 760.
 def test_card_lists_the_etfs_own_levels():
     card = levels_cli.market_embed(sample_levels(source="QQQ", sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS),
                                    None)
-    assert card["description"].startswith("From QQQ + NDX options at 14:30 New York")
-    assert card["fields"][0]["value"].split("\n")[4] == "QQQ alone: flip 748.31 · CW 760 · PW 750"
+    assert card["description"].startswith("QQQ + NDX options read Mon 05 Oct 14:30 New York")
+    assert card["fields"][0]["value"].split("\n")[5] == "QQQ alone: flip 748.31 · CW 760 · PW 750"
     single = levels_cli.market_embed(sample_levels(symbol="YM", source="DIA", sources=("DIA",),
                                                    own_horizons=OWN_HORIZONS), None)
-    assert "\nDIA: flip 748.31 · CW 760 · PW 750\n" in single["fields"][0]["value"]
+    assert "\nDIA: flip 748.31 · CW 760 · PW 750" in single["fields"][0]["value"]
 
 
 def test_card_says_where_the_levels_were_measured():
     card = levels_cli.market_embed(sample_levels(source="QQQ", ratio=41.4, measured_at=745.74), 30_900.0)
-    assert card["description"].endswith("Levels measured at NQ 30,874 (QQQ 745.74), the price when posted.")
-    assert "Levels measured" not in levels_cli.market_embed(sample_levels(), None)["description"]
+    assert card["description"].startswith("Price when posted: NQ 30,874 (QQQ 745.74). ")
+    assert "Price when posted" not in levels_cli.market_embed(sample_levels(), None)["description"]
 
 
 def test_daily_levels_are_measured_at_the_futures_price(monkeypatch):
@@ -207,14 +207,14 @@ def test_horizons_ending_together_share_a_column():
 
 def test_card_without_horizons_shows_every_expiry():
     card = levels_cli.market_embed(sample_levels(horizons=[]), None)
-    assert [f["name"] for f in card["fields"]] == ["Regime", "Gamma flip", "Call wall", "Put wall"]
+    assert [f["name"] for f in card["fields"]] == ["Mood", "Ceiling (call wall)", "Pivot (gamma flip)", "Floor (put wall)"]
 
 
 def test_card_says_when_open_interest_was_refreshed():
     morning = pd.Timestamp("2026-10-06 09:15", tz="America/New_York")
     card = levels_cli.market_embed(sample_levels(open_interest_time=morning), None)
-    assert card["description"].startswith("Open interest as of 09:15 New York, Tue 06 Oct (includes Mon's full session)")
-    assert "prices and vols from NDX options at 14:30 New York, Mon 05 Oct" in card["description"]
+    assert card["description"] == ("NDX options read Mon 05 Oct 14:30 New York (NDX 24,000.00 ≈ NQ 31,200 then), "
+                                   "open interest from Tue 09:15.")
 
 
 def test_card_without_ratio_shows_underlying_levels():
@@ -222,7 +222,7 @@ def test_card_without_ratio_shows_underlying_levels():
     card = levels_cli.market_embed(sample_levels(ratio=np.nan, horizons=[
         lv.HorizonLevels(**(vars(today) | {"flip": np.nan}))]), None)
     lines = card["fields"][0]["value"].split("\n")
-    assert "Call wall **24,200.00** (NDX)" in lines and "Flip none within ±15%" in lines
+    assert "Ceiling **24,200.00** (NDX)" in lines and "Pivot none within ±15%" in lines
 
 
 def test_zero_dte_message():
@@ -234,7 +234,7 @@ def test_zero_dte_message():
     nq, ym = payload["embeds"]
     assert nq["title"] == "NQ 0DTE gamma · 14:30 New York" and "today's expiry (0DTE)" in nq["description"]
     fields = {f["name"]: f["value"] for f in nq["fields"]}
-    assert fields["Regime"].startswith("Positive 0DTE gamma")
+    assert fields["Mood (0DTE)"] == levels_cli.CALM
     assert fields["Implied move to the close"] == "Straddle ±52 pts · 1σ ±65 pts\nFrom 31,210: **31,145 – 31,275** (1σ)"
     assert fields["Busiest strikes today (contracts)"] == "Calls: 31,460 (51,000), 31,590 (20,000)\nPuts: 30,940 (64,000)"
     assert "the nearest expiry, Fri 09 Oct (none expires today)" in ym["description"]
@@ -571,3 +571,10 @@ def test_levels_for_dates_the_horizons_from_the_posting_day(snapshots):
         levels = lv.levels_for("NQ", before="2026-10-10", directory=snapshots)  # a Saturday
     assert levels.session == pd.Timestamp("2026-10-12")
     assert [h.covers for h in levels.horizons][-1] == ("month",)
+
+
+def test_levels_are_listed_top_to_bottom_like_the_chart():
+    above_ceiling = lv.HorizonLevels(covers=("day",), end=pd.Timestamp("2026-10-05"), net_gamma=-1e9, flip=24_300.0,
+                                     call_wall=24_200.0, put_wall=np.nan, move_pct=0.01)
+    lines = levels_cli.market_embed(sample_levels(ratio=np.nan, horizons=[above_ceiling]), None)["fields"][0]["value"]
+    assert lines.split("\n")[1:4] == ["Pivot **24,300.00** (NDX)", "Ceiling **24,200.00** (NDX)", "Floor none within ±15%"]

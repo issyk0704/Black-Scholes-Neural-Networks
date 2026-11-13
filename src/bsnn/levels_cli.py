@@ -124,18 +124,25 @@ def _price_then(levels: MarketLevels) -> str:
     return where
 
 
+CALM, FAST = "🟢 Calm: moves tend to snap back", "🔴 Fast: moves tend to run"
+
+
+def _mood(net_gamma: float) -> str:
+    """Positive gamma (dealers own the options) brakes moves; negative (they sold them) speeds them up."""
+    return CALM if net_gamma > 0 else FAST
+
+
 def _gamma_fields(levels: MarketLevels, prefix: str = "") -> list[dict]:
-    regime = (f"Positive {prefix}gamma: dealers tend to sell rallies and buy dips, damping moves" if levels.net_gamma > 0
-              else f"Negative {prefix}gamma: dealers tend to chase moves, amplifying them")
     return [
-        {"name": "Regime", "value": regime, "inline": False},
-        {"name": "Gamma flip", "value": _points(levels, levels.flip), "inline": True},
-        {"name": "Call wall", "value": _points(levels, levels.call_wall), "inline": True},
-        {"name": "Put wall", "value": _points(levels, levels.put_wall), "inline": True},
+        {"name": f"Mood{f' ({prefix.strip()})' if prefix else ''}", "value": _mood(levels.net_gamma), "inline": False},
+        {"name": "Ceiling (call wall)", "value": _points(levels, levels.call_wall), "inline": True},
+        {"name": "Pivot (gamma flip)", "value": _points(levels, levels.flip), "inline": True},
+        {"name": "Floor (put wall)", "value": _points(levels, levels.put_wall), "inline": True},
     ]
 
 
 HORIZON_NAMES = {"day": "Today", "week": "This week", "month": "This month"}
+STRADDLE_SHARE = levels_record.STRADDLE_SHARE  # the straddle: the average move, 0.8 of 1σ
 
 
 def _option_price(level: float) -> str:
@@ -166,23 +173,31 @@ def _sources(levels: MarketLevels) -> str:
     return " + ".join(s.lstrip("^") for s in levels.sources or (levels.source,))
 
 
+def _ladder(levels: MarketLevels, h: HorizonLevels) -> list[str]:
+    """Ceiling, pivot and floor ordered by price, highest first, as they sit on the chart
+    (the pivot can be above the ceiling or below the floor); a missing level goes last."""
+    rungs = [("Ceiling", h.call_wall), ("Pivot", h.flip), ("Floor", h.put_wall)]
+    rungs.sort(key=lambda rung: -rung[1] if np.isfinite(rung[1]) else np.inf)
+    return [f"{label} {_points(levels, value)}" for label, value in rungs]
+
+
 def _horizon_field(levels: MarketLevels, h: HorizonLevels, live_price: float | None) -> dict:
-    """One column of the card: a horizon's regime, gamma levels, the source's own levels and 1σ range."""
+    """One column of the card: its mood, the levels top to bottom, the expected and outer ranges
+    and the source's own levels."""
     name = " & ".join(HORIZON_NAMES[c] for c in h.covers)
     if "day" not in h.covers:
         name += f" (to {h.end:%a %d %b})"
-    lines = ["Positive gamma: damping" if h.net_gamma > 0 else "Negative gamma: amplifying",
-             f"Flip {_points(levels, h.flip)}", f"Call wall {_points(levels, h.call_wall)}",
-             f"Put wall {_points(levels, h.put_wall)}"]
+    lines = [_mood(h.net_gamma)] + _ladder(levels, h)
+    if np.isfinite(h.move_pct):
+        if live_price:
+            for label, share in (("Expected", STRADDLE_SHARE), ("Outer", 1.0)):
+                points = live_price * h.move_pct * share
+                lines.append(f"{label} **{live_price - points:,.0f} – {live_price + points:,.0f}** (±{points:,.0f})")
+        else:
+            lines.append(f"Expected ±{h.move_pct * STRADDLE_SHARE:.2%} · Outer ±{h.move_pct:.2%}")
     own = _own_line(levels, h)
     if own:
         lines.append(own)
-    if np.isfinite(h.move_pct):
-        if live_price:
-            points = live_price * h.move_pct
-            lines.append(f"1σ **{live_price - points:,.0f} – {live_price + points:,.0f}** (±{points:,.0f})")
-        else:
-            lines.append(f"1σ ±{h.move_pct:.2%}")
     if h.nearest_expiry:
         lines.append(f"Nothing expires by then: uses {pd.Timestamp(h.nearest_expiry):%a %d %b}")
     return {"name": name, "value": "\n".join(lines), "inline": True}
@@ -193,15 +208,12 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
     # Without horizons (nothing left to expire this month), fall back to every expiry's levels.
     fields = [_horizon_field(levels, h, live_price) for h in levels.horizons] or _gamma_fields(levels)
     taken, source = levels.snapshot_time, _sources(levels)
-    description = (f"From {source} options at {taken:%H:%M} New York, {taken:%a %d %b} ({_price_then(levels)} "
-                   f"then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+    description = f"{source} options read {taken:%a %d %b %H:%M} New York ({_price_then(levels)} then)"
     if levels.open_interest_time is not None:
-        oi = levels.open_interest_time
-        description = (f"Open interest as of {oi:%H:%M} New York, {oi:%a %d %b} (includes {taken:%a}'s full session); "
-                       f"prices and vols from {source} options at {taken:%H:%M} New York, {taken:%a %d %b} "
-                       f"({_price_then(levels)} then). Net gamma, all expiries: {levels.net_gamma / 1e9:+.2f}bn $ per 1% move.")
+        description += f", open interest from {levels.open_interest_time:%a %H:%M}"
+    description += "."
     if np.isfinite(levels.measured_at):
-        description += f" Levels measured at {_measured_at(levels)}, the price when posted."
+        description = f"Price when posted: {_measured_at(levels)}. " + description
     return {
         "title": f"{levels.symbol} options levels",
         "description": description,
@@ -244,13 +256,13 @@ def zero_dte_embed(levels: ZeroDteLevels, live_price: float | None) -> dict:
     }
 
 
-DAILY_FOOTER = ("Each column uses only the options expiring by its end, adding up index and ETF options (NDX + QQQ, "
-                "SPX + SPY; DIA for YM); the ETF line gives the ETF's own levels in its prices. Positive gamma: "
-                "dealers tend to sell rallies and buy dips; negative: they chase moves. Call wall: most call gamma "
-                "above the price the levels were measured at; put wall: most put gamma below. 1σ: the move the options price to the column's "
-                "end, around the current futures price (about 68% of closes land inside). Converted to futures at "
-                "the futures/ETF price ratio when the options were read. Gamma assumes dealers are long customers' "
-                "calls and short their puts. Context, not signals.")
+DAILY_FOOTER = ("How to read it. Ceiling (call wall): price often stalls on the first touch; a clean break above "
+                "can run. Floor (put wall): often bounces once; a clean break below can speed up. Pivot (gamma flip): "
+                "above it moves tend to snap back (calm), below it they tend to run (fast). Expected: the typical "
+                "move the options price to the column's end (the straddle); Outer: one standard deviation, rarely "
+                "reached. This assumes dealers own the calls and sold the puts; the reaction at a level shows "
+                "whether that holds. Each column uses only options expiring by its end (NDX + QQQ, SPX + SPY, DIA), "
+                "converted to futures. Where to look, not when to trade: the ICT setup decides.")
 ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live prices, so they move with price and time "
                    "left, but can't see positions opened today. Busiest strikes show volume, not direction. "
                    "Context, not signals.")

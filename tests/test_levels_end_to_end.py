@@ -61,9 +61,9 @@ def test_morning_post_uses_fridays_prices_with_this_mornings_open_interest(home,
     (payload,) = sent
     assert payload["content"].startswith("**Options levels for Monday 05 October 2026**")
     card = payload["embeds"][0]
-    assert card["description"].startswith("Open interest as of 09:15 New York, Mon 05 Oct")
-    assert "prices and vols from QQQ + NDX options at 16:30 New York, Fri 02 Oct" in card["description"]
-    assert "Levels measured at NQ 4,129 (QQQ 99.50)" in card["description"]
+    assert card["description"].endswith("open interest from Mon 09:15.")
+    assert "QQQ + NDX options read Fri 02 Oct 16:30 New York" in card["description"]
+    assert card["description"].startswith("Price when posted: NQ 4,129 (QQQ 99.50). ")
     assert [f["name"] for f in card["fields"]] == ["Today", "This week (to Fri 09 Oct)", "This month (to Fri 30 Oct)"]
     assert (tmp_path / "levels_posted.txt").read_text().strip() == "2026-10-05 daily"
     (record,) = [json.loads(line) for line in (tmp_path / "levels" / "2026-10-05.jsonl").read_text().splitlines()]
@@ -84,7 +84,7 @@ def test_manual_post_in_the_session_reads_the_live_chains_for_today(home, monkey
     (payload,) = sent
     assert payload["content"].startswith("**Options levels for Monday 05 October 2026**")
     card = payload["embeds"][0]
-    assert card["description"].startswith("From QQQ + NDX options at 10:35 New York, Mon 05 Oct")
+    assert card["description"].startswith("Price when posted: NQ 4,150 (QQQ 100.00). QQQ + NDX options read Mon 05 Oct 10:35 New York")
     today = card["fields"][0]
     assert today["name"] == "Today" and "Nothing expires" not in today["value"]
     # Today's 1σ is the move today's expiry still prices to the close, not a whole day's.
