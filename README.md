@@ -140,6 +140,8 @@ heading. They read the live chains, so the levels move with price, and they add 
 strikes** to today's ladder (open interest only changes overnight, so volume is the one same-day
 view of positioning).
 
+**On TradingView.** The message text carries a 📋 block, one line per market (`NQ Z26 2026-11-16 09:45 | D F ceiling pivot floor expected-low expected-high outer-low outer-high | W … | M …`), for the TradingViewIndicators `Options-Levels` script; it also reads the card text itself. The block sits in the message text, which has its own 2,000-character limit, so the cards keep their 6,000.
+
 **Which futures contract.** NQ, ES, YM and RTY levels are priced in the contract we trade: we stay on
 the current quarterly contract until the **next one's open interest is higher**, then switch
 (`contracts.py`, open interest from Yahoo's quote for each contract, e.g. `NQZ26.CME`). Yahoo's
