@@ -17,6 +17,8 @@ $weekdays = @(1, 2, 3, 4, 5)  # cron-job.org counts 0 = Sunday
 
 $jobs = @(
     @{ Title = "BSNN daily levels"; Workflow = "levels.yml";   Hours = @(9);      Minutes = @(15); Inputs = @{ post_now = $false } }
+    # Edits the day's card at 09:45, 10:45 and 14:45, just before the ICT macros.
+    @{ Title = "BSNN levels updates"; Workflow = "levels.yml"; Hours = @(9, 10, 14); Minutes = @(45); Inputs = @{ post_now = $false } }
     @{ Title = "BSNN collect";      Workflow = "collect.yml";  Hours = @(16);     Minutes = @(30); Inputs = @{ force = $false } }
 )
 

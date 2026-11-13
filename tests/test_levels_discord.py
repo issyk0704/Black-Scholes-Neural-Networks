@@ -42,7 +42,7 @@ def test_manual_post_edits_the_days_card(discord):
     assert levels_cli.main(["--markets", "NQ", "--post", "--scheduled"]) == 0
     assert levels_cli.main(["--markets", "NQ", "--post"]) == 0
     assert [(kind, message_id) for kind, message_id, _ in calls] == [("post", None), ("edit", "m1")]
-    assert calls[1][2]["content"] == "**Options levels for Tuesday 06 October 2026** · as of 09:15 New York"
+    assert calls[1][2]["content"] == "**Options levels for Tuesday 06 October 2026** · as of 09:15 New York / 14:15 UK"
     assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1"}
     assert [(r["kind"], r["message_id"]) for r in records(tmp_path)] == [("scheduled", "m1"), ("manual-edit", "m1")]
 
@@ -121,3 +121,21 @@ def test_post_waits_for_the_message_id_and_edit_patches_it(monkeypatch):
     assert (method, url, body) == ("POST", WEBHOOK + "?wait=true", payload)
     assert (edit_method, edit_url) == ("PATCH", WEBHOOK + "/messages/123")
     assert "username" not in edit_body and edit_body["content"] == "x"
+
+
+def test_scheduled_update_edits_the_days_card(discord, monkeypatch):
+    calls, tmp_path = discord
+    levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[0], ""))
+    assert levels_cli.main(["--markets", "NQ", "--post", "--scheduled"]) == 0
+    assert [(kind, message_id) for kind, message_id, _ in calls] == [("post", None), ("edit", "m1")]
+    assert [r["kind"] for r in records(tmp_path)] == ["scheduled", "update"]
+    assert "update-09:45" in (tmp_path / "levels_posted.txt").read_text()
+
+
+def test_scheduled_update_without_a_morning_card_posts_one(discord, monkeypatch):
+    calls, tmp_path = discord
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[1], ""))
+    levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
+    assert [kind for kind, _, _ in calls] == ["post"]
+    assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1"}  # later updates edit it

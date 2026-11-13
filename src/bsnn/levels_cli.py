@@ -2,7 +2,7 @@
 
     bsnn-levels                         # print the message as JSON (nothing is sent)
     bsnn-levels --post                  # send it to the webhook in DISCORD_WEBHOOK_URL
-    bsnn-levels --post --scheduled      # send only in the morning posting slot, once a day
+    bsnn-levels --post --scheduled      # send in the morning slot (09:15) or an update slot (09:45, 10:45, 14:45)
     bsnn-levels --post --new-message    # post a separate card instead of updating the day's
     bsnn-levels --zero-dte              # today's 0DTE levels from live chains (US hours only)
     bsnn-levels --markets NQ ES
@@ -21,9 +21,11 @@ The posting day follows the clock: before the 16:00 New York close it's today,
 after it the next weekday. Before a morning card is posted it must pass the
 checks in levels_checks; a market that fails is left out and the run fails.
 
-The scheduled post starts each day's card. A manual post then edits that card in
-place (its heading says when it was updated), so corrections and refreshes don't
-add messages; --new-message posts a separate card instead.
+The scheduled post starts each day's card. Scheduled updates at 09:45, 10:45 and
+14:45 New York (just before the ICT macros) and manual posts then edit that card
+in place (its heading says when, in New York and UK time), so refreshes don't add
+messages; --new-message posts a separate card instead. A card read from live chains
+also lists the most-traded 0DTE strikes.
 
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
 Actions secret), never in a file.
@@ -63,7 +65,12 @@ class Slot:
     end: dt.time
 
 
-DAILY_SLOT = Slot("daily", dt.time(8, 30), dt.time(11, 0))  # scheduled for 09:15
+DAILY_SLOT = Slot("daily", dt.time(8, 30), dt.time(9, 40))  # scheduled for 09:15; closes before the first update
+# Intraday refreshes of the day's card, each just before an ICT macro (09:50, 10:50, 14:50 New York).
+UPDATE_SLOTS = (Slot("update-09:45", dt.time(9, 40), dt.time(10, 30)),
+                Slot("update-10:45", dt.time(10, 40), dt.time(11, 30)),
+                Slot("update-14:45", dt.time(14, 40), dt.time(15, 30)))
+UK_TZ = "Europe/London"
 
 
 # --- When to post ----------------------------------------------------------------
@@ -203,10 +210,25 @@ def _horizon_field(levels: MarketLevels, h: HorizonLevels, live_price: float | N
     return {"name": name, "value": "\n".join(lines), "inline": True}
 
 
+def _busiest_field(levels: MarketLevels) -> dict | None:
+    """Today's most-traded 0DTE strikes (live chains only), in futures points."""
+    if not (levels.busiest_calls or levels.busiest_puts):
+        return None
+    def strikes(values: list[float]) -> str:
+        return ", ".join(_points(levels, k) for k in values) or "none"
+    return {"name": f"0DTE trading now ({levels.source.lstrip('^')} volume)",
+            "value": f"Calls {strikes(levels.busiest_calls)} · Puts {strikes(levels.busiest_puts)}\n"
+                     "Price is often drawn to busy strikes into the close; volume doesn't show who bought.",
+            "inline": False}
+
+
 def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
     """The morning card for a market: levels for today, this week and this month, side by side."""
     # Without horizons (nothing left to expire this month), fall back to every expiry's levels.
     fields = [_horizon_field(levels, h, live_price) for h in levels.horizons] or _gamma_fields(levels)
+    busiest = _busiest_field(levels)
+    if busiest:
+        fields.append(busiest)
     taken, source = levels.snapshot_time, _sources(levels)
     description = f"{source} options read {taken:%a %d %b %H:%M} New York ({_price_then(levels)} then)"
     if levels.open_interest_time is not None:
@@ -281,7 +303,8 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
     else:
         heading = f"**Options levels for {today:%A %d %B %Y}**"
         if as_of is not None:
-            heading += f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
+            heading += (f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
+                        f" / {as_of.tz_convert(UK_TZ):%H:%M} UK")
     return {"username": "Options levels", "content": heading, "embeds": embeds}
 
 
@@ -429,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--zero-dte", action="store_true", help="today's 0DTE levels from live chains (US hours)")
     parser.add_argument("--post", action="store_true", help="send to the webhook in DISCORD_WEBHOOK_URL")
     parser.add_argument("--scheduled", "--at-open", dest="scheduled", action="store_true",
-                        help="only send in the morning posting slot, and only once a day")
+                        help="only send in a posting slot (morning card or intraday update), each once a day")
     parser.add_argument("--new-message", action="store_true",
                         help="post a separate card instead of editing the day's (manual posts edit it by default)")
     parser.add_argument("--include-today", action="store_true",
@@ -444,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.scheduled and args.zero_dte:
         parser.error("0DTE updates aren't scheduled any more; post them by hand without --scheduled")
     if args.scheduled:
-        slot, reason = due_slot(now, (DAILY_SLOT,), marker)
+        slot, reason = due_slot(now, (DAILY_SLOT,) + UPDATE_SLOTS, marker)
         if slot is None:
             print(f"Not posting: {reason}.")
             return 0
@@ -473,11 +496,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Set DISCORD_WEBHOOK_URL to the channel's webhook URL to post.", file=sys.stderr)
         return 1
     # The scheduled post and 0DTE updates are always new messages; a manual post edits the day's card.
-    update = not (slot or args.zero_dte or args.new_message)
+    # Scheduled intraday updates edit it too (or post it, if the morning card is missing).
+    is_update = slot in UPDATE_SLOTS
+    update = is_update or not (slot or args.zero_dte or args.new_message)
     action, message_id = send(webhook, payload, day, paths.DATA_DIR / "levels_messages.json", update,
                               remember=not args.zero_dte)  # a 0DTE update never becomes the day's card
     record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
-    kind = "zero-dte" if args.zero_dte else "scheduled" if slot else "manual-edit" if action == "edited" else "manual"
+    kind = ("zero-dte" if args.zero_dte else "update" if is_update else "scheduled" if slot
+            else "manual-edit" if action == "edited" else "manual")
     levels_record.append(paths.DATA_DIR / "levels", day, now, kind, all_levels, live_prices, message_id)
     print(f"{action.capitalize()} {'0DTE ' if args.zero_dte else ''}levels for "
           f"{', '.join(lv.symbol for lv in all_levels)}.")

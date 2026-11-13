@@ -155,6 +155,9 @@ class MarketLevels:
     sources: tuple[str, ...] = ()  # every chain added into the levels, e.g. ("QQQ", "^NDX"); source first
     measured_at: float = np.nan  # underlying price the gamma levels were measured at, when not the snapshot's
     own_horizons: list[HorizonLevels] = field(default_factory=list)  # source's chain alone, in its prices
+    # Today's most-traded 0DTE strikes (source chain, its prices), busiest first; only from a live chain.
+    busiest_calls: list[float] = field(default_factory=list)
+    busiest_puts: list[float] = field(default_factory=list)
 
     def in_futures(self, level: float) -> float:
         return level * self.ratio
@@ -229,13 +232,32 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     snapshot_time = pd.Timestamp(raw["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
     session = session_for(snapshot_time) if session is None else pd.Timestamp(session).normalize()
     horizons = compute_horizons(dataset, session, moves)
+    calls, puts = busiest_today(own, snapshot_time, session)
     return MarketLevels(
         symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time,
         spot=float(raw["underlyingPrice"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan,
         open_interest_time=open_interest_time, session=session, horizons=horizons,
         sources=tuple(d["ticker"].iloc[0] for d in [own] + extra), measured_at=measured_at,
-        own_horizons=compute_horizons(own, session, moves) if extra else horizons)
+        own_horizons=compute_horizons(own, session, moves) if extra else horizons,
+        busiest_calls=calls, busiest_puts=puts)
+
+
+BUSIEST = 2  # strikes listed per side
+
+
+def busiest_today(dataset: pd.DataFrame, snapshot_time: pd.Timestamp, session: pd.Timestamp,
+                  top: int = BUSIEST) -> tuple[list[float], list[float]]:
+    """The most-traded call and put strikes of today's expiry, when the chain was read during
+    ``session`` (an earlier snapshot's volume is a past session's). Empty lists otherwise."""
+    if snapshot_time.tz_localize(None).normalize() != pd.Timestamp(session).normalize():
+        return [], []
+    front, is_today = analytics.front_expiry(dataset)
+    if not is_today or "volume" not in front:
+        return [], []
+    volume = analytics.volume_by_strike(front)
+    return ([float(k) for k, v in volume["call"].nlargest(top).items() if v > 0],
+            [float(k) for k, v in volume["put"].nlargest(top).items() if v > 0])
 
 
 @dataclass

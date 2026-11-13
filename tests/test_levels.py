@@ -191,7 +191,8 @@ def test_daily_levels_are_measured_at_the_futures_price(monkeypatch):
 
 
 def test_three_markets_fit_in_one_message():
-    payload = levels_cli.build_message([sample_levels(symbol=s, sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS)
+    payload = levels_cli.build_message([sample_levels(symbol=s, sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS,
+                                                      busiest_calls=[24_200.0, 24_300.0], busiest_puts=[23_800.0, 23_700.0])
                                         for s in ("NQ", "ES", "YM")],
                                        {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0},
                                        pd.Timestamp("2026-10-06").date())
@@ -578,3 +579,50 @@ def test_levels_are_listed_top_to_bottom_like_the_chart():
                                      call_wall=24_200.0, put_wall=np.nan, move_pct=0.01)
     lines = levels_cli.market_embed(sample_levels(ratio=np.nan, horizons=[above_ceiling]), None)["fields"][0]["value"]
     assert lines.split("\n")[1:4] == ["Pivot **24,300.00** (NDX)", "Ceiling **24,200.00** (NDX)", "Floor none within ±15%"]
+
+
+ALL_SLOTS = (levels_cli.DAILY_SLOT,) + levels_cli.UPDATE_SLOTS
+
+
+@pytest.mark.parametrize("when, posted, expected", [
+    ("2026-10-06 13:39", "", "daily"),                                 # 09:39 New York: still the morning card
+    ("2026-10-06 13:45", "2026-10-06 daily", "update-09:45"),          # just before the 09:50 macro
+    ("2026-10-06 14:45", "2026-10-06 update-09:45", "update-10:45"),
+    ("2026-10-06 18:45", "", "update-14:45"),                          # 14:45, after the PM macro window opens
+    ("2026-10-06 18:50", "2026-10-06 update-14:45", None),             # already updated
+    ("2026-10-06 16:00", "", None),                                    # 12:00: between slots
+    ("2026-12-08 15:45", "", "update-10:45"),                          # winter: 10:45 New York = 15:45 UTC
+])
+def test_update_slots(tmp_path, when, posted, expected):
+    marker = tmp_path / "levels_posted.txt"
+    marker.write_text(posted + "\n")
+    slot, _ = levels_cli.due_slot(pd.Timestamp(when, tz="UTC"), ALL_SLOTS, marker)
+    assert (slot.name if slot else None) == expected
+
+
+def test_slots_never_overlap():
+    slots = sorted(ALL_SLOTS, key=lambda s: s.start)
+    assert all(a.end <= b.start for a, b in zip(slots, slots[1:]))
+
+
+def test_card_lists_todays_busiest_strikes_in_futures_points():
+    card = levels_cli.market_embed(sample_levels(busiest_calls=[24_200.0, 24_300.0], busiest_puts=[23_800.0]), None)
+    field = card["fields"][-1]
+    assert field["name"] == "0DTE trading now (NDX volume)" and not field["inline"]
+    assert field["value"].startswith("Calls **31,460**, **31,590** · Puts **30,940**\n")
+    assert all("0DTE" not in f["name"] for f in levels_cli.market_embed(sample_levels(), None)["fields"])
+
+
+def _chain(volume_call, volume_put, expiry="2026-10-06"):
+    return pd.DataFrame({"K": [100.0, 101.0, 99.0, 98.0], "is_call": [1, 1, 0, 0],
+                         "volume": [volume_call, 5.0, volume_put, 0.0],
+                         "expiry": [expiry] * 4, "snapshot": ["2026-10-06 10:40"] * 4})
+
+
+def test_busiest_strikes_come_only_from_a_chain_read_that_session():
+    live = pd.Timestamp("2026-10-06 10:40", tz="America/New_York")
+    assert lv.busiest_today(_chain(50.0, 70.0), live, pd.Timestamp("2026-10-06")) == ([100.0, 101.0], [99.0])
+    yesterday = pd.Timestamp("2026-10-05 16:30", tz="America/New_York")  # its volume is Monday's
+    assert lv.busiest_today(_chain(50.0, 70.0), yesterday, pd.Timestamp("2026-10-06")) == ([], [])
+    no_expiry_today = _chain(50.0, 70.0, expiry="2026-10-07")
+    assert lv.busiest_today(no_expiry_today, live, pd.Timestamp("2026-10-06")) == ([], [])
