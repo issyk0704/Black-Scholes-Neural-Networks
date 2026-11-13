@@ -2,13 +2,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bsnn import levels_scorecard, pricing
+from bsnn import contracts, levels_scorecard, pricing
 
 
 @pytest.fixture(autouse=True)
 def no_scorecard_downloads(monkeypatch):
     """Tests never download futures bars for the scorecard; a test that needs bars passes its own."""
     monkeypatch.setattr(levels_scorecard, "fetch_bars", lambda symbol: pd.DataFrame(columns=["High", "Low", "Close"]))
+
+
+@pytest.fixture(autouse=True)
+def no_open_interest_downloads(monkeypatch):
+    """Tests never ask Yahoo for contract open interest, so futures are priced from the continuous
+    symbol (NQ=F) unless a test supplies open interest itself."""
+    def unavailable(ticker):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(contracts, "fetch_open_interest", unavailable)
+    contracts._active.cache_clear()
+    yield
+    contracts._active.cache_clear()
 
 
 @pytest.fixture
