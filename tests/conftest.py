@@ -61,3 +61,13 @@ def make_chain(snapshot="2026-01-05T15:00:00+00:00", spot=100.0, ticker="TEST",
 @pytest.fixture
 def chain():
     return make_chain()
+
+
+def fits_discord(payload: dict) -> bool:
+    """Within Discord's limits: 2,000 characters of message text, 6,000 of embed text (titles,
+    descriptions, field names and values, footers), 10 embeds."""
+    def text(e):
+        return (len(e.get("title", "")) + len(e.get("description", "")) + len(e.get("footer", {}).get("text", ""))
+                + sum(len(f["name"]) + len(f["value"]) for f in e.get("fields", [])))
+    embeds = payload.get("embeds", [])
+    return len(payload.get("content", "")) <= 2000 and sum(text(e) for e in embeds) <= 6000 and len(embeds) <= 10

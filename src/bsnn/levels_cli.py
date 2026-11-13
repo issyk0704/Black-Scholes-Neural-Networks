@@ -307,6 +307,37 @@ ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live price
                    "Context, not signals.")
 
 
+def _tv_number(value: float) -> str:
+    return f"{value:.2f}" if np.isfinite(value) else "-"
+
+
+def tradingview_line(levels: MarketLevels, live_price: float | None, as_of: pd.Timestamp | None) -> str | None:
+    """One line for the Options Levels Pine script, e.g.
+    "NQ Z26 2026-11-13 09:45 | DW F 28002.00 28353.00 27796.00 27737.00 28023.00 27700.00 28059.00 | M F ...".
+
+    After the market, contract code (- for the continuous symbol), session and New York time, one
+    segment per column: the horizons it covers (D, W, M), the mood (C calm, F fast), then ceiling,
+    pivot, floor, expected low / high, outer low / high in futures points (- when missing). None
+    without a futures conversion.
+    """
+    if not np.isfinite(levels.ratio) or not levels.horizons:
+        return None
+    code = levels.contract.split(".")[0][-3:] if "." in levels.contract else "-"
+    when = "-" if as_of is None else f"{as_of.tz_convert(market_data.MARKET_TZ):%H:%M}"
+    session = "-" if levels.session is None else f"{levels.session:%Y-%m-%d}"
+    segments = [f"{levels.symbol} {code} {session} {when}"]
+    for h in levels.horizons:
+        values = [levels.in_futures(h.call_wall), levels.in_futures(h.flip), levels.in_futures(h.put_wall)]
+        if live_price and np.isfinite(h.move_pct):
+            expected, outer = live_price * h.move_pct * STRADDLE_SHARE, live_price * h.move_pct
+            values += [live_price - expected, live_price + expected, live_price - outer, live_price + outer]
+        else:
+            values += [np.nan] * 4
+        letters = "".join(c[0].upper() for c in h.covers)
+        segments.append(" ".join([letters, "C" if h.net_gamma > 0 else "F"] + [_tv_number(v) for v in values]))
+    return " | ".join(segments)
+
+
 def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float], today: dt.date,
                   as_of: pd.Timestamp | None = None, review: dict | None = None) -> dict:
     """The full webhook payload: a heading (with the New York time ``as_of``, if given), one card per
@@ -327,6 +358,11 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
         if as_of is not None:
             heading += (f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
                         f" / {as_of.tz_convert(UK_TZ):%H:%M} UK")
+        # For the Options Levels Pine script: copy the block into its settings. In the message text,
+        # which has its own 2,000-character limit, so the cards keep their 6,000.
+        lines = [ln for ln in (tradingview_line(lv, live_prices.get(lv.symbol), as_of) for lv in all_levels) if ln]
+        if lines:
+            heading += "\n📋 TradingView (Options Levels script):\n```\n" + "\n".join(lines) + "\n```"
     return {"username": "Options levels", "content": heading, "embeds": embeds}
 
 

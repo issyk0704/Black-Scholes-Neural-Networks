@@ -3,6 +3,8 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+
+from conftest import fits_discord
 from scipy.stats import norm
 
 from bsnn import levels_scorecard as sc
@@ -154,7 +156,7 @@ def test_mondays_card_ends_with_last_weeks_scorecard_and_fits_discord(tmp_path, 
                        busiest_calls=[24_200.0, 24_300.0], busiest_puts=[23_800.0, 23_700.0]) for s in ("NQ", "ES", "YM")],
         {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0}, pd.Timestamp("2026-11-09").date(), review=review)
     assert payload["embeds"][-1] is review and "footer" in payload["embeds"][-2]
-    assert len(json.dumps(payload, ensure_ascii=False)) < 6000
+    assert fits_discord(payload)
 
 
 def test_a_broken_scorecard_never_stops_the_post(tmp_path, monkeypatch):

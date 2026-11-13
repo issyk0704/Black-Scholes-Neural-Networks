@@ -42,7 +42,7 @@ def test_manual_post_edits_the_days_card(discord):
     assert levels_cli.main(["--markets", "NQ", "--post", "--scheduled"]) == 0
     assert levels_cli.main(["--markets", "NQ", "--post"]) == 0
     assert [(kind, message_id) for kind, message_id, _ in calls] == [("post", None), ("edit", "m1")]
-    assert calls[1][2]["content"] == "**Options levels for Tuesday 06 October 2026** · as of 09:15 New York / 14:15 UK"
+    assert calls[1][2]["content"].startswith("**Options levels for Tuesday 06 October 2026** · as of 09:15 New York / 14:15 UK\n")
     assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1"}
     assert [(r["kind"], r["message_id"]) for r in records(tmp_path)] == [("scheduled", "m1"), ("manual-edit", "m1")]
 

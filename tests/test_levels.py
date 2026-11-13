@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import fits_discord
+
 from bsnn import analytics, levels as lv, levels_cli, market_data
 
 from conftest import make_chain
@@ -167,7 +169,7 @@ def test_message_is_webhook_ready_json():
     assert "Expected ±1.63% · Outer ±2.04%" in es["fields"][1]["value"]  # no live price for ES: sizes only
     assert "footer" in es and es["fields"][-1]["name"] == "💡 How to read"  # once, on the last card
     assert all(f["name"] != "💡 How to read" for f in nq["fields"])
-    assert len(json.dumps(payload)) < 6000  # Discord's limit for a message's embeds
+    assert fits_discord(payload)
 
 
 OWN_HORIZONS = [lv.HorizonLevels(**(vars(h) | {"flip": 748.31, "call_wall": 760.0, "put_wall": 750.0}))
@@ -211,7 +213,7 @@ def test_three_markets_fit_in_one_message():
                                         for s in ("NQ", "ES", "YM")],
                                        {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0},
                                        pd.Timestamp("2026-10-06").date())
-    assert len(json.dumps(payload, ensure_ascii=False)) < 6000
+    assert fits_discord(payload)
 
 
 def test_horizons_ending_together_share_a_column():
@@ -641,3 +643,35 @@ def test_busiest_strikes_come_only_from_a_chain_read_that_session():
     assert lv.busiest_today(_chain(50.0, 70.0), yesterday, pd.Timestamp("2026-10-06")) == ([], [])
     no_expiry_today = _chain(50.0, 70.0, expiry="2026-10-07")
     assert lv.busiest_today(no_expiry_today, live, pd.Timestamp("2026-10-06")) == ([], [])
+
+
+def test_tradingview_line_has_every_column_in_futures_points():
+    as_of = pd.Timestamp("2026-10-06 13:45", tz="UTC")  # 09:45 New York
+    line = levels_cli.tradingview_line(sample_levels(contract="NQZ26.CME", session=pd.Timestamp("2026-10-06")),
+                                       31_400.0, as_of)
+    head, day, week, month = line.split(" | ")
+    assert head == "NQ Z26 2026-10-06 09:45"
+    tokens = day.split()
+    assert tokens[:2] == ["D", "C"]
+    ceiling, pivot, floor, exp_lo, exp_hi, out_lo, out_hi = map(float, tokens[2:])
+    assert (ceiling, pivot, floor) == (31_460.0, 30_810.0, 30_940.0)  # NDX levels x 1.3
+    assert out_hi - 31_400 == pytest.approx(31_400 * 0.0102) and exp_hi - 31_400 == pytest.approx((out_hi - 31_400) * 0.79788, rel=1e-4)
+    assert exp_lo < 31_400 < exp_hi and out_lo < exp_lo
+    assert week.split()[:2] == ["W", "F"] and month.startswith("M ")
+
+
+def test_tradingview_line_marks_missing_values_and_merged_columns():
+    merged = lv.HorizonLevels(covers=("day", "week"), end=pd.Timestamp("2026-10-09"), net_gamma=-1e9, flip=np.nan,
+                              call_wall=24_200.0, put_wall=23_800.0, move_pct=0.01)
+    line = levels_cli.tradingview_line(sample_levels(horizons=[merged]), None, None)
+    assert line == "NQ - - - | DW F 31460.00 - 30940.00 - - - -"
+    assert levels_cli.tradingview_line(sample_levels(ratio=np.nan), 31_400.0, None) is None
+
+
+def test_message_text_carries_the_copy_block_and_fits():
+    payload = levels_cli.build_message([sample_levels(symbol=s) for s in ("NQ", "ES", "YM")],
+                                       {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0}, pd.Timestamp("2026-10-06").date(),
+                                       as_of=pd.Timestamp("2026-10-06 13:45", tz="UTC"))
+    block = payload["content"].split("```")[1].strip().split("\n")
+    assert [ln.split()[0] for ln in block] == ["NQ", "ES", "YM"]
+    assert len(payload["content"]) < 2000  # Discord's limit for the message text
