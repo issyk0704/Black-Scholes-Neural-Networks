@@ -80,11 +80,10 @@ def test_card_and_record_name_the_contract():
     from test_levels import sample_levels
 
     card_levels = sample_levels(source="QQQ", ratio=41.4, measured_at=745.74, contract="NQH27.CME")
-    assert levels_cli.market_embed(card_levels, 30_900.0)["description"].startswith(
-        "Price when posted: NQ Mar 27 30,874 (QQQ 745.74). ")
+    assert levels_cli.market_embed(card_levels, 30_900.0)["description"].startswith("In NQ Mar 27 prices. ")
     assert levels_record.market_record(card_levels, 30_900.0)["futures_ticker"] == "NQH27.CME"
     continuous = sample_levels(source="QQQ", ratio=41.4, measured_at=745.74)
-    assert levels_cli.market_embed(continuous, 30_900.0)["description"].startswith("Price when posted: NQ 30,874 ")
+    assert levels_cli.market_embed(continuous, 30_900.0)["description"].startswith("In NQ prices. ")
 
 
 def test_prices_come_from_our_contract(monkeypatch):

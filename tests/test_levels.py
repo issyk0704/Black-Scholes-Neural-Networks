@@ -147,17 +147,26 @@ def test_message_is_webhook_ready_json():
     json.dumps(payload)  # serialisable
     nq, es = payload["embeds"]
     assert nq["color"] == levels_cli.POSITIVE and es["color"] == levels_cli.NEGATIVE
-    assert nq["description"] == "NDX options read Mon 05 Oct 14:30 New York (NDX 24,000.00 ≈ NQ 31,200 then)."
+    assert nq["description"] == "In NQ prices. NDX options read Mon 05 Oct 14:30 New York."
     today, week, month = nq["fields"]
-    assert all(f["inline"] for f in nq["fields"])  # side by side
+    assert not any(f["inline"] for f in nq["fields"])  # one ladder under another
     assert today["name"] == "Today" and week["name"] == "This week (to Fri 09 Oct)"
     assert month["name"] == "This month (to Fri 30 Oct)"
-    assert today["value"].split("\n") == [levels_cli.CALM, "Ceiling **31,460**", "Floor **30,940**",
-                                           "Pivot **30,810**", "Expected **31,144 – 31,656** (±256)",
-                                           "Outer **31,080 – 31,720** (±320)"]
+    # Every price top to bottom, like the chart, with what it is.
+    assert today["value"].split("\n") == [levels_cli.CALM,
+                                           "**31,720**  Outer high · rarely reached",
+                                           "**31,656**  Expected high",
+                                           "**31,460**  Ceiling · may stall here",
+                                           "**31,400**  ◀ PRICE NOW",
+                                           "**31,144**  Expected low",
+                                           "**31,080**  Outer low · rarely reached",
+                                           "**30,940**  Floor · may bounce here",
+                                           "**30,810**  Pivot · above = calm, below = fast"]
     assert week["value"].startswith(levels_cli.FAST)
     assert month["value"].endswith("Nothing expires by then: uses Fri 06 Nov")
-    assert "Expected ±1.63% · Outer ±2.04%" in es["fields"][1]["value"] and "footer" in es  # no live price for ES; footer on the last card
+    assert "Expected ±1.63% · Outer ±2.04%" in es["fields"][1]["value"]  # no live price for ES: sizes only
+    assert "footer" in es and es["fields"][-1]["name"] == "💡 How to read"  # once, on the last card
+    assert all(f["name"] != "💡 How to read" for f in nq["fields"])
     assert len(json.dumps(payload)) < 6000  # Discord's limit for a message's embeds
 
 
@@ -165,20 +174,26 @@ OWN_HORIZONS = [lv.HorizonLevels(**(vars(h) | {"flip": 748.31, "call_wall": 760.
                 for h in HORIZONS]
 
 
-def test_card_lists_the_etfs_own_levels():
+def test_card_shows_only_futures_prices():
+    """The ETF's own levels (e.g. QQQ 680) are a different unit and stay off the card."""
     card = levels_cli.market_embed(sample_levels(source="QQQ", sources=("QQQ", "^NDX"), own_horizons=OWN_HORIZONS),
-                                   None)
-    assert card["description"].startswith("QQQ + NDX options read Mon 05 Oct 14:30 New York")
-    assert card["fields"][0]["value"].split("\n")[5] == "QQQ alone: flip 748.31 · CW 760 · PW 750"
-    single = levels_cli.market_embed(sample_levels(symbol="YM", source="DIA", sources=("DIA",),
-                                                   own_horizons=OWN_HORIZONS), None)
-    assert "\nDIA: flip 748.31 · CW 760 · PW 750" in single["fields"][0]["value"]
+                                   31_400.0)
+    assert card["description"].startswith("In NQ prices. QQQ + NDX options read Mon 05 Oct 14:30 New York")
+    assert all("748.31" not in f["value"] and "CW" not in f["value"] for f in card["fields"])
 
 
-def test_card_says_where_the_levels_were_measured():
-    card = levels_cli.market_embed(sample_levels(source="QQQ", ratio=41.4, measured_at=745.74), 30_900.0)
-    assert card["description"].startswith("Price when posted: NQ 30,874 (QQQ 745.74). ")
-    assert "Price when posted" not in levels_cli.market_embed(sample_levels(), None)["description"]
+def test_levels_on_the_same_point_share_a_line():
+    lines = levels_cli._ladder_lines([(100.2, "ceiling"), (99.8, "busy"), (90.0, "busy"), (95.0, "now")])
+    assert lines == ["**100**  Ceiling · may stall here (busy strike)", "**95**  ◀ PRICE NOW",
+                     "**90**  Busy strike · pulls price into the close"]
+
+
+def test_a_column_without_a_pivot_says_so():
+    no_flip = lv.HorizonLevels(covers=("day",), end=pd.Timestamp("2026-10-06"), net_gamma=-1e9, flip=np.nan,
+                               call_wall=24_200.0, put_wall=23_800.0, move_pct=0.0102)
+    lines = levels_cli.market_embed(sample_levels(horizons=[no_flip]), 31_400.0)["fields"][0]["value"].split("\n")
+    assert lines[:2] == [levels_cli.FAST, "No pivot within ±15%: fast at every price nearby"]
+    assert not any("Pivot ·" in line for line in lines)
 
 
 def test_daily_levels_are_measured_at_the_futures_price(monkeypatch):
@@ -214,8 +229,7 @@ def test_card_without_horizons_shows_every_expiry():
 def test_card_says_when_open_interest_was_refreshed():
     morning = pd.Timestamp("2026-10-06 09:15", tz="America/New_York")
     card = levels_cli.market_embed(sample_levels(open_interest_time=morning), None)
-    assert card["description"] == ("NDX options read Mon 05 Oct 14:30 New York (NDX 24,000.00 ≈ NQ 31,200 then), "
-                                   "open interest from Tue 09:15.")
+    assert card["description"] == "In NQ prices. NDX options read Mon 05 Oct 14:30 New York, open interest from Tue 09:15."
 
 
 def test_card_without_ratio_shows_underlying_levels():
@@ -605,12 +619,13 @@ def test_slots_never_overlap():
     assert all(a.end <= b.start for a, b in zip(slots, slots[1:]))
 
 
-def test_card_lists_todays_busiest_strikes_in_futures_points():
-    card = levels_cli.market_embed(sample_levels(busiest_calls=[24_200.0, 24_300.0], busiest_puts=[23_800.0]), None)
-    field = card["fields"][-1]
-    assert field["name"] == "0DTE trading now (NDX volume)" and not field["inline"]
-    assert field["value"].startswith("Calls **31,460**, **31,590** · Puts **30,940**\n")
-    assert all("0DTE" not in f["name"] for f in levels_cli.market_embed(sample_levels(), None)["fields"])
+def test_todays_busiest_strikes_sit_in_todays_ladder():
+    card = levels_cli.market_embed(sample_levels(busiest_calls=[24_200.0, 24_300.0], busiest_puts=[23_900.0]), 31_400.0)
+    today, week, month = card["fields"]
+    assert "**31,590**  Busy strike · pulls price into the close" in today["value"].split("\n")
+    assert "**31,460**  Ceiling · may stall here (busy strike)" in today["value"].split("\n")
+    assert "**31,070**  Busy strike · pulls price into the close" in today["value"].split("\n")
+    assert "Busy" not in week["value"] + month["value"]  # 0DTE volume says nothing about later expiries
 
 
 def _chain(volume_call, volume_put, expiry="2026-10-06"):

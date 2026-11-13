@@ -152,33 +152,10 @@ HORIZON_NAMES = {"day": "Today", "week": "This week", "month": "This month"}
 STRADDLE_SHARE = levels_record.STRADDLE_SHARE  # the straddle: the average move, 0.8 of 1σ
 
 
-def _option_price(level: float) -> str:
-    """A level in the option underlying's own prices: whole strikes without decimals."""
-    if not np.isfinite(level):
-        return "none"
-    return f"{level:,.0f}" if float(level).is_integer() else f"{level:,.2f}"
-
-
-def _own_line(levels: MarketLevels, h: HorizonLevels) -> str | None:
-    """The source chain's own levels for the horizon, e.g. "QQQ alone: flip 748.31 · CW 760 · PW 750"."""
-    own = next((o for o in levels.own_horizons if o.end == h.end), None)
-    if own is None:
-        return None
-    name = levels.source.lstrip("^") + (" alone" if len(levels.sources) > 1 else "")
-    return (f"{name}: flip {_option_price(own.flip)} · CW {_option_price(own.call_wall)} "
-            f"· PW {_option_price(own.put_wall)}")
-
-
 def _futures_name(levels: MarketLevels) -> str:
     """E.g. "NQ Dec 26", or "NQ" when priced from the continuous symbol."""
     name = contracts.contract_name(levels.contract) if levels.contract else "front"
     return levels.symbol if name == "front" else f"{levels.symbol} {name}"
-
-
-def _measured_at(levels: MarketLevels) -> str:
-    """E.g. "NQ Dec 26 30,882 (QQQ 745.74)"."""
-    return (f"{_futures_name(levels)} {levels.in_futures(levels.measured_at):,.0f} "
-            f"({levels.source.lstrip('^')} {levels.measured_at:,.2f})")
 
 
 def _sources(levels: MarketLevels) -> str:
@@ -194,54 +171,94 @@ def _ladder(levels: MarketLevels, h: HorizonLevels) -> list[str]:
     return [f"{label} {_points(levels, value)}" for label, value in rungs]
 
 
+# What each price on a column is, in the order labels share a line when they land on the same point.
+RUNG_LABELS = {
+    "pivot": "Pivot · above = calm, below = fast",
+    "outer_high": "Outer high · rarely reached",
+    "expected_high": "Expected high",
+    "ceiling": "Ceiling · may stall here",
+    "now": "◀ PRICE NOW",
+    "busy": "Busy strike · pulls price into the close",
+    "floor": "Floor · may bounce here",
+    "expected_low": "Expected low",
+    "outer_low": "Outer low · rarely reached",
+}
+
+
+def _rungs(levels: MarketLevels, h: HorizonLevels, live_price: float | None, busy: list[float]) -> list[tuple[float, str]]:
+    """Every price on a column in futures points, with what it is: the levels, price now, the
+    expected and outer ranges around it, and today's busiest strikes."""
+    rungs = [(levels.in_futures(h.call_wall), "ceiling"), (levels.in_futures(h.flip), "pivot"),
+             (levels.in_futures(h.put_wall), "floor")]
+    if live_price:
+        rungs.append((live_price, "now"))
+        if np.isfinite(h.move_pct):
+            for name, share in (("expected", STRADDLE_SHARE), ("outer", 1.0)):
+                points = live_price * h.move_pct * share
+                rungs += [(live_price + points, f"{name}_high"), (live_price - points, f"{name}_low")]
+    rungs += [(levels.in_futures(k), "busy") for k in busy]
+    return [(price, name) for price, name in rungs if np.isfinite(price)]
+
+
+def _ladder_lines(rungs: list[tuple[float, str]]) -> list[str]:
+    """One line per price, highest first, like the chart; things on the same point share a line."""
+    by_point: dict[int, set[str]] = {}
+    for price, name in rungs:
+        by_point.setdefault(round(price), set()).add(name)
+    order = list(RUNG_LABELS)
+
+    def label(names: set[str]) -> str:
+        others = [RUNG_LABELS[n] for n in sorted(names - {"busy"}, key=order.index)]
+        if not others:
+            return RUNG_LABELS["busy"]
+        text = " + ".join(others)
+        if "busy" in names:  # next to a level, a short tag instead of the full label
+            text += " (busy strike)"
+        return text
+
+    return [f"**{point:,}**  {label(names)}" for point, names in sorted(by_point.items(), reverse=True)]
+
+
 def _horizon_field(levels: MarketLevels, h: HorizonLevels, live_price: float | None) -> dict:
-    """One column of the card: its mood, the levels top to bottom, the expected and outer ranges
-    and the source's own levels."""
+    """One column of the card: its mood, then every price top to bottom with what it is."""
     name = " & ".join(HORIZON_NAMES[c] for c in h.covers)
     if "day" not in h.covers:
         name += f" (to {h.end:%a %d %b})"
-    lines = [_mood(h.net_gamma)] + _ladder(levels, h)
-    if np.isfinite(h.move_pct):
-        if live_price:
-            for label, share in (("Expected", STRADDLE_SHARE), ("Outer", 1.0)):
-                points = live_price * h.move_pct * share
-                lines.append(f"{label} **{live_price - points:,.0f} – {live_price + points:,.0f}** (±{points:,.0f})")
-        else:
-            lines.append(f"Expected ±{h.move_pct * STRADDLE_SHARE:.2%} · Outer ±{h.move_pct:.2%}")
-    own = _own_line(levels, h)
-    if own:
-        lines.append(own)
+    lines = [_mood(h.net_gamma)]
+    if not np.isfinite(h.flip):
+        lines.append(f"No pivot within ±15%: {'fast' if h.net_gamma < 0 else 'calm'} at every price nearby")
+    if np.isfinite(levels.ratio):
+        busy = levels.busiest_calls + levels.busiest_puts if "day" in h.covers else []
+        lines += _ladder_lines(_rungs(levels, h, live_price, busy))
+    else:  # no futures conversion: the levels stay in the option underlying's prices
+        lines += _ladder(levels, h)
+    if np.isfinite(h.move_pct) and not (live_price and np.isfinite(levels.ratio)):
+        lines.append(f"Expected ±{h.move_pct * STRADDLE_SHARE:.2%} · Outer ±{h.move_pct:.2%}")
     if h.nearest_expiry:
         lines.append(f"Nothing expires by then: uses {pd.Timestamp(h.nearest_expiry):%a %d %b}")
-    return {"name": name, "value": "\n".join(lines), "inline": True}
+    return {"name": name, "value": "\n".join(lines), "inline": False}
 
 
-def _busiest_field(levels: MarketLevels) -> dict | None:
-    """Today's most-traded 0DTE strikes (live chains only), in futures points."""
-    if not (levels.busiest_calls or levels.busiest_puts):
-        return None
-    def strikes(values: list[float]) -> str:
-        return ", ".join(_points(levels, k) for k in values) or "none"
-    return {"name": f"0DTE trading now ({levels.source.lstrip('^')} volume)",
-            "value": f"Calls {strikes(levels.busiest_calls)} · Puts {strikes(levels.busiest_puts)}\n"
-                     "Price is often drawn to busy strikes into the close; volume doesn't show who bought.",
-            "inline": False}
+HOW_TO_READ = "\n".join([
+    "Read each list like the chart: higher prices at the top, **◀ PRICE NOW** is where price is.",
+    "**Ceiling**: price often stalls here going up. **Floor**: often bounces here going down. "
+    "A clean break through either can run.",
+    "**Pivot**: above it the day is calm (moves snap back); below it, fast (moves run).",
+    "**Expected**: the usual range to the column's end. **Outer**: rarely reached.",
+    "**Busy strike**: today's most-traded options; price is often pulled there into the close.",
+    "All prices are futures points. Where to look, not when to trade: the ICT setup decides.",
+])
 
 
 def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
-    """The morning card for a market: levels for today, this week and this month, side by side."""
+    """The card for a market: a price ladder for today, this week and this month."""
     # Without horizons (nothing left to expire this month), fall back to every expiry's levels.
     fields = [_horizon_field(levels, h, live_price) for h in levels.horizons] or _gamma_fields(levels)
-    busiest = _busiest_field(levels)
-    if busiest:
-        fields.append(busiest)
     taken, source = levels.snapshot_time, _sources(levels)
-    description = f"{source} options read {taken:%a %d %b %H:%M} New York ({_price_then(levels)} then)"
+    description = f"In {_futures_name(levels)} prices. {source} options read {taken:%a %d %b %H:%M} New York"
     if levels.open_interest_time is not None:
         description += f", open interest from {levels.open_interest_time:%a %H:%M}"
     description += "."
-    if np.isfinite(levels.measured_at):
-        description = f"Price when posted: {_measured_at(levels)}. " + description
     return {
         "title": f"{levels.symbol} options levels",
         "description": description,
@@ -284,13 +301,7 @@ def zero_dte_embed(levels: ZeroDteLevels, live_price: float | None) -> dict:
     }
 
 
-DAILY_FOOTER = ("How to read it. Ceiling (call wall): price often stalls on the first touch; a clean break above "
-                "can run. Floor (put wall): often bounces once; a clean break below can speed up. Pivot (gamma flip): "
-                "above it moves tend to snap back (calm), below it they tend to run (fast). Expected: the typical "
-                "move the options price to the column's end (the straddle); Outer: one standard deviation, rarely "
-                "reached. This assumes dealers own the calls and sold the puts; the reaction at a level shows "
-                "whether that holds. Each column uses only options expiring by its end (NDX + QQQ, SPX + SPY, DIA), "
-                "converted to futures. Where to look, not when to trade: the ICT setup decides.")
+DAILY_FOOTER = ("Ceiling = call wall, floor = put wall, pivot = gamma flip, from the options expiring by each column's end (NDX + QQQ, SPX + SPY, DIA), assuming dealers own the calls and sold the puts. Expected = the straddle, outer = one standard deviation.")
 ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live prices, so they move with price and time "
                    "left, but can't see positions opened today. Busiest strikes show volume, not direction. "
                    "Context, not signals.")
@@ -305,6 +316,8 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
     embeds = [make(lv, live_prices.get(lv.symbol)) for lv in all_levels]
     if embeds:
         embeds[-1]["footer"] = {"text": ZERO_DTE_FOOTER if zero_dte else DAILY_FOOTER}
+        if not zero_dte:
+            embeds[-1]["fields"].append({"name": "💡 How to read", "value": HOW_TO_READ, "inline": False})
     if review:
         embeds.append(review)
     if zero_dte:

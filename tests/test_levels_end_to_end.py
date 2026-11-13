@@ -63,8 +63,10 @@ def test_morning_post_uses_fridays_prices_with_this_mornings_open_interest(home,
     card = payload["embeds"][0]
     assert card["description"].endswith("open interest from Mon 09:15.")
     assert "QQQ + NDX options read Fri 02 Oct 16:30 New York" in card["description"]
-    assert card["description"].startswith("Price when posted: NQ 4,129 (QQQ 99.50). ")
-    assert [f["name"] for f in card["fields"]] == ["Today", "This week (to Fri 09 Oct)", "This month (to Fri 30 Oct)"]
+    assert card["description"].startswith("In NQ prices. ")
+    assert "**4,129**  ◀ PRICE NOW" in card["fields"][0]["value"]  # measured at the price when posted
+    assert [f["name"] for f in card["fields"]] == ["Today", "This week (to Fri 09 Oct)", "This month (to Fri 30 Oct)",
+                                                  "💡 How to read"]
     assert (tmp_path / "levels_posted.txt").read_text().strip() == "2026-10-05 daily"
     (record,) = [json.loads(line) for line in (tmp_path / "levels" / "2026-10-05.jsonl").read_text().splitlines()]
     assert record["kind"] == "scheduled" and record["posted_at"].startswith("2026-10-05T13:15")
@@ -84,13 +86,13 @@ def test_manual_post_in_the_session_reads_the_live_chains_for_today(home, monkey
     (payload,) = sent
     assert payload["content"].startswith("**Options levels for Monday 05 October 2026**")
     card = payload["embeds"][0]
-    assert card["description"].startswith("Price when posted: NQ 4,150 (QQQ 100.00). QQQ + NDX options read Mon 05 Oct 10:35 New York")
+    assert card["description"].startswith("In NQ prices. QQQ + NDX options read Mon 05 Oct 10:35 New York")
     today = card["fields"][0]
     assert today["name"] == "Today" and "Nothing expires" not in today["value"]
     # Today's 1σ is the move today's expiry still prices to the close, not a whole day's.
     left_today = analytics.implied_moves(build_dataset(live["QQQ"], lv.FILTERS)).set_index("expiry")
     expected = price * left_today.at["2026-10-05", "move_pct"]
-    assert f"(±{expected:,.0f})" in today["value"]
+    assert f"**{round(price + expected):,}**  Outer high" in today["value"]
     assert "manual-daily-10:35" in (tmp_path / "levels_posted.txt").read_text()
 
 
