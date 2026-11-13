@@ -9,6 +9,8 @@ import json
 import pandas as pd
 import pytest
 
+from conftest import is_copy
+
 from bsnn import analytics, levels as lv, levels_cli, market_data
 from bsnn.features import build_dataset
 
@@ -40,7 +42,7 @@ def home(monkeypatch, tmp_path):
         market_data.save_option_snapshot(chain, tmp_path / "options")
     sent = []
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
-    monkeypatch.setattr(levels_cli, "post", lambda url, payload: sent.append(payload))
+    monkeypatch.setattr(levels_cli, "post", lambda url, payload: None if is_copy(payload) else sent.append(payload))
     return tmp_path, sent
 
 

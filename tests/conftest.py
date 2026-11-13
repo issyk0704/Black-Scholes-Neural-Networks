@@ -71,3 +71,8 @@ def fits_discord(payload: dict) -> bool:
                 + sum(len(f["name"]) + len(f["value"]) for f in e.get("fields", [])))
     embeds = payload.get("embeds", [])
     return len(payload.get("content", "")) <= 2000 and sum(text(e) for e in embeds) <= 6000 and len(embeds) <= 10
+
+
+def is_copy(payload: dict) -> bool:
+    """The small message under the card with the TradingView lines (no embeds)."""
+    return payload.get("content", "").startswith("📋") and not payload.get("embeds")

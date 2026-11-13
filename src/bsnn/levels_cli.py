@@ -308,7 +308,10 @@ ZERO_DTE_FOOTER = ("0DTE levels use this morning's open interest with live price
 
 
 def _tv_number(value: float) -> str:
-    return f"{value:.2f}" if np.isfinite(value) else "-"
+    """A price to the nearest quarter point, without trailing zeros: 28061, 7592.25; "-" when missing."""
+    if not np.isfinite(value):
+        return "-"
+    return f"{round(value * 4) / 4:.2f}".rstrip("0").rstrip(".")
 
 
 def tradingview_line(levels: MarketLevels, live_price: float | None, as_of: pd.Timestamp | None) -> str | None:
@@ -358,12 +361,16 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
         if as_of is not None:
             heading += (f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
                         f" / {as_of.tz_convert(UK_TZ):%H:%M} UK")
-        # For the Options Levels Pine script: copy the block into its settings. In the message text,
-        # which has its own 2,000-character limit, so the cards keep their 6,000.
-        lines = [ln for ln in (tradingview_line(lv, live_prices.get(lv.symbol), as_of) for lv in all_levels) if ln]
-        if lines:
-            heading += "\n📋 TradingView (Options Levels script):\n```\n" + "\n".join(lines) + "\n```"
     return {"username": "Options levels", "content": heading, "embeds": embeds}
+
+
+def copy_message(all_levels: list[MarketLevels], live_prices: dict[str, float], as_of: pd.Timestamp | None) -> dict | None:
+    """The small message posted under the card: just the lines for the Options Levels Pine script,
+    one per market, in a code box to copy (long-press > Copy Text on the phone)."""
+    lines = [ln for ln in (tradingview_line(lv, live_prices.get(lv.symbol), as_of) for lv in all_levels) if ln]
+    if not lines:
+        return None
+    return {"username": "Options levels", "content": "📋 **Copy into TradingView** (Options Levels)\n```\n" + "\n".join(lines) + "\n```"}
 
 
 def webhook_endpoint(webhook_url: str, path: str = "", **query: str) -> str:
@@ -395,26 +402,28 @@ def edit(webhook_url: str, message_id: str, payload: dict) -> None:
     _send(webhook_endpoint(webhook_url, f"/messages/{message_id}"), body, "PATCH")
 
 
-MESSAGES_KEPT = 14  # days of message IDs to remember
+MESSAGES_KEPT = 28  # message IDs to remember: two weeks of cards and their copy messages
+COPY_SUFFIX = "-copy"  # store key of a day's copy message, e.g. "2026-11-16-copy"
 
 
 def load_message_ids(path: Path) -> dict[str, str]:
-    """Each posting day's card: {"2026-10-12": "<Discord message ID>"}."""
+    """Each posting day's card and copy message: {"2026-10-12": "<ID>", "2026-10-12-copy": "<ID>"}."""
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def save_message_id(path: Path, day, message_id: str) -> None:
-    ids = load_message_ids(path) | {f"{pd.Timestamp(day):%Y-%m-%d}": message_id}
+def save_message_id(path: Path, day, message_id: str, suffix: str = "") -> None:
+    ids = load_message_ids(path) | {f"{pd.Timestamp(day):%Y-%m-%d}{suffix}": message_id}
     recent = dict(sorted(ids.items())[-MESSAGES_KEPT:])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(recent, indent=1) + "\n", encoding="utf-8")
 
 
-def send(webhook: str, payload: dict, day, store: Path, update: bool, remember: bool = True) -> tuple[str, str | None]:
-    """Edit ``day``'s card when ``update`` and there is one, otherwise post a new message
-    (also when the card was deleted in Discord), which becomes the day's card if ``remember``.
+def send(webhook: str, payload: dict, day, store: Path, update: bool, remember: bool = True,
+         suffix: str = "") -> tuple[str, str | None]:
+    """Edit ``day``'s card (its copy message with ``suffix``) when ``update`` and there is one, otherwise
+    post a new message (also when it was deleted in Discord), which becomes the day's if ``remember``.
     Returns what happened and the message ID."""
-    key = f"{pd.Timestamp(day):%Y-%m-%d}"
+    key = f"{pd.Timestamp(day):%Y-%m-%d}{suffix}"
     existing = load_message_ids(store).get(key) if update else None
     if existing:
         try:
@@ -426,7 +435,7 @@ def send(webhook: str, payload: dict, day, store: Path, update: bool, remember: 
             print(f"The {key} card is gone from Discord; posting a new one.", file=sys.stderr)
     message_id = post(webhook, payload)
     if message_id and remember:
-        save_message_id(store, day, message_id)
+        save_message_id(store, day, message_id, suffix)
     return "posted", message_id
 
 
@@ -561,10 +570,13 @@ def main(argv: list[str] | None = None) -> int:
     day = today if args.zero_dte else session.date()
     review = None if args.zero_dte else scorecard(session)
     payload = build_message(all_levels, live_prices, day, as_of=now, review=review)
+    copy = None if args.zero_dte else copy_message(all_levels, live_prices, now)
 
     status = 1 if missing else 0  # a market left out fails the run, after posting the others
     if not args.post:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+        if copy:
+            print("Copy message:\n" + copy["content"], file=sys.stderr)
         return status
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
@@ -574,8 +586,12 @@ def main(argv: list[str] | None = None) -> int:
     # Scheduled intraday updates edit it too (or post it, if the morning card is missing).
     is_update = slot in UPDATE_SLOTS
     update = is_update or not (slot or args.zero_dte or args.new_message)
-    action, message_id = send(webhook, payload, day, paths.DATA_DIR / "levels_messages.json", update,
+    store = paths.DATA_DIR / "levels_messages.json"
+    action, message_id = send(webhook, payload, day, store, update,
                               remember=not args.zero_dte)  # a 0DTE update never becomes the day's card
+    # The copy message follows its card: a new card gets a new one right under it, an edited card edits it.
+    if copy:
+        send(webhook, copy, day, store, update=action == "edited", suffix=COPY_SUFFIX)
     record_post(marker, today, slot.name if slot else manual_entry(now, args.zero_dte))
     kind = ("zero-dte" if args.zero_dte else "update" if is_update else "scheduled" if slot
             else "manual-edit" if action == "edited" else "manual")

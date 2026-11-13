@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import fits_discord
+from conftest import fits_discord, is_copy
 
 from bsnn import analytics, levels as lv, levels_cli, market_data
 
@@ -324,7 +324,7 @@ def fake_post(monkeypatch, tmp_path):
     monkeypatch.setattr(levels_cli, "levels_for", lambda symbol, before, prefer, **kw: passing_levels(symbol))
     monkeypatch.setattr(levels_cli, "live_zero_dte", lambda symbol, prefer: sample_zero_dte(symbol=symbol))
     monkeypatch.setattr(levels_cli.market_data, "latest_price", lambda ticker: 31_400.0)
-    monkeypatch.setattr(levels_cli, "post", lambda url, payload: sent.update(url=url, payload=payload))
+    monkeypatch.setattr(levels_cli, "post", lambda url, payload: None if is_copy(payload) else sent.update(url=url, payload=payload))
     return sent, tmp_path / "levels_posted.txt"
 
 
@@ -655,7 +655,8 @@ def test_tradingview_line_has_every_column_in_futures_points():
     assert tokens[:2] == ["D", "C"]
     ceiling, pivot, floor, exp_lo, exp_hi, out_lo, out_hi = map(float, tokens[2:])
     assert (ceiling, pivot, floor) == (31_460.0, 30_810.0, 30_940.0)  # NDX levels x 1.3
-    assert out_hi - 31_400 == pytest.approx(31_400 * 0.0102) and exp_hi - 31_400 == pytest.approx((out_hi - 31_400) * 0.79788, rel=1e-4)
+    assert out_hi - 31_400 == pytest.approx(31_400 * 0.0102, abs=0.25)  # to the nearest quarter point
+    assert exp_hi - 31_400 == pytest.approx((out_hi - 31_400) * 0.79788, abs=0.25)
     assert exp_lo < 31_400 < exp_hi and out_lo < exp_lo
     assert week.split()[:2] == ["W", "F"] and month.startswith("M ")
 
@@ -664,14 +665,16 @@ def test_tradingview_line_marks_missing_values_and_merged_columns():
     merged = lv.HorizonLevels(covers=("day", "week"), end=pd.Timestamp("2026-10-09"), net_gamma=-1e9, flip=np.nan,
                               call_wall=24_200.0, put_wall=23_800.0, move_pct=0.01)
     line = levels_cli.tradingview_line(sample_levels(horizons=[merged]), None, None)
-    assert line == "NQ - - - | DW F 31460.00 - 30940.00 - - - -"
+    assert line == "NQ - - - | DW F 31460 - 30940 - - - -"
     assert levels_cli.tradingview_line(sample_levels(ratio=np.nan), 31_400.0, None) is None
 
 
-def test_message_text_carries_the_copy_block_and_fits():
-    payload = levels_cli.build_message([sample_levels(symbol=s) for s in ("NQ", "ES", "YM")],
-                                       {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0}, pd.Timestamp("2026-10-06").date(),
-                                       as_of=pd.Timestamp("2026-10-06 13:45", tz="UTC"))
-    block = payload["content"].split("```")[1].strip().split("\n")
-    assert [ln.split()[0] for ln in block] == ["NQ", "ES", "YM"]
-    assert len(payload["content"]) < 2000  # Discord's limit for the message text
+def test_copy_message_holds_one_line_per_market_and_the_card_none():
+    levels = [sample_levels(symbol=s) for s in ("NQ", "ES", "YM")]
+    prices = {"NQ": 31_400.0, "ES": 6_800.0, "YM": 46_000.0}
+    as_of = pd.Timestamp("2026-10-06 13:45", tz="UTC")
+    copy = levels_cli.copy_message(levels, prices, as_of)
+    block = copy["content"].split("```")[1].strip().split("\n")
+    assert [ln.split()[0] for ln in block] == ["NQ", "ES", "YM"] and fits_discord(copy)
+    assert "```" not in levels_cli.build_message(levels, prices, pd.Timestamp("2026-10-06").date(), as_of=as_of)["content"]
+    assert levels_cli.copy_message([sample_levels(ratio=np.nan)], prices, as_of) is None
