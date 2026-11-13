@@ -83,12 +83,16 @@ other way so each contract keeps its dollar gamma), then the levels convert to f
 futures/ETF ratio. Each card has three columns, **today**, **this week** (to Friday) and **this
 month** (to its last weekday), and each column shows:
 
-- the gamma regime, gamma flip, call wall and put wall in futures points, from **only the options
-  expiring by the end of that column**. That is the positioning dealers must hedge before that
+- the mood (🟢 **calm**: positive gamma, moves tend to snap back; 🔴 **fast**: negative gamma, moves
+  tend to run), then the **ceiling** (call wall), **pivot** (gamma flip) and **floor** (put wall) in
+  futures points, listed by price from the top as they sit on the chart. They come from **only the
+  options expiring by the end of that column**: the positioning dealers must hedge before that
   candle closes; longer-dated options belong to the later columns;
 - the ETF's own flip and walls, in ETF prices (e.g. `QQQ alone: flip 748.23 · CW 760 · PW 750`);
-- the one-standard-deviation move to the column's end, as a range around the current futures
-  price. It uses the expiry that spans the horizon: its total implied variance (ATM vol² × time,
+- the **expected** range (the at-the-money straddle, √(2/π) ≈ 0.8 of one standard deviation: the
+  average size of the move) and the **outer** range (one standard deviation) to the column's end,
+  around the current futures price. Our record from 13 Oct to 12 Nov found the NY session's range
+  was only about 55-60% of the outer one, hence the expected range first. The move uses the expiry that spans the horizon: its total implied variance (ATM vol² × time,
   weekends included) shared equally among its sessions, of which the column takes its own. When
   the column ends on that expiry, this is exactly the move the expiry prices (a Monday expiry
   priced on Friday includes the weekend); DIA, which has no daily expiries, gives Monday a fifth
@@ -114,10 +118,21 @@ above that price and put walls below it, and a 1σ of a sane size that widens fr
 month. A market that fails is left out with the reasons, the others are posted, and the run fails,
 so a problem shows as a red run rather than a wrong card.
 
-**One card a day.** The 09:15 post starts the day's card. A manual post then **edits that card in
-place**, with "as of HH:MM New York" in its heading, so a correction or an intraday refresh doesn't
-add a message; `--new-message` posts a separate card instead (later edits update that one). 0DTE
+**One card a day, updated before each macro.** The 09:15 post starts the day's card. Scheduled
+updates at **09:45, 10:45 and 14:45 New York** (just before the 09:50, 10:50 and 14:50 ICT macros)
+and manual posts then **edit that card in place**, with "as of HH:MM New York / HH:MM UK" in its
+heading. They read the live chains, so the levels move with price, and they add the **busiest 0DTE
+strikes** by volume (open interest only changes overnight, so volume is the one same-day view of
+positioning). `--new-message` posts a separate card instead (later edits update that one). 0DTE
 updates are always separate messages.
+
+**Scorecards.** Every card scores the finished morning cards against the New York cash session
+(09:30-16:00) and saves them to `data/levels_scores.csv` (Yahoo keeps only about 60 days of
+5-minute bars): did the ceiling hold, did the floor hold, did the close land inside the expected
+range, each set against chance (how often a level that far away holds anyway, 2·Φ(d/σ) − 1).
+**Monday's card** ends with last week's scorecard and **the month's first card** with last month's,
+plus how the week's or month's own levels did and a running verdict since 13 Oct. NQ, ES and YM
+move together, so the verdict counts three markets on one day as about one test.
 
 **A record of every post.** Each post appends one JSON line to `data/levels/<day>.jsonl` with
 every level (in the ETF's prices and in futures points), the 1σ range and the inputs behind them.
@@ -146,10 +161,11 @@ the morning's open interest: positions opened today, and whether volume was buyi
 can't be seen in free data.
 
 In the cloud, a workflow in the private data repository posts the day, week and month levels
-each weekday at **09:15** New York time. It reads the webhook URL from a GitHub Actions secret.
+each weekday at **09:15** New York time and updates them at 09:45, 10:45 and 14:45. It reads the webhook URL from a GitHub Actions secret.
 GitHub's own schedules can start hours late, so a free [cron-job.org](https://cron-job.org) account
-starts the workflows on time through GitHub's API; `.\scripts\register-cron-jobs.ps1` creates those
-jobs, and deletes the retired 0DTE ones.
+starts the workflows on time through GitHub's API (09:15 card; 09:45, 10:45 and 14:45 updates;
+16:30 collection); `.\scripts\register-cron-jobs.ps1` creates those jobs, and deletes the retired
+0DTE ones.
 
 The **Moves & gamma** tab has the same 0DTE view ("Gamma from: 0DTE"), a volume-by-strike chart,
 and a 15-minute auto-refresh during US hours.
