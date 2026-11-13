@@ -53,7 +53,8 @@ def market_record(levels: MarketLevels, price: float | None) -> dict:
         "session": None if levels.session is None else f"{levels.session:%Y-%m-%d}",
         "snapshot_time": _time(levels.snapshot_time), "open_interest_time": _time(levels.open_interest_time),
         "spot": _number(levels.spot), "ratio": _number(levels.ratio), "measured_at": _number(levels.measured_at),
-        "futures_price": None if price is None else _number(price), "net_gamma": _number(levels.net_gamma),
+        "futures_price": None if price is None else _number(price), "futures_ticker": levels.contract or None,
+        "net_gamma": _number(levels.net_gamma),
         "horizons": [horizon_record(h, levels, price) for h in levels.horizons],
         "own_horizons": [horizon_record(h, levels, None) for h in levels.own_horizons],
     }

@@ -384,11 +384,16 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
     futures = instruments.futures_for(ticker)
     if futures is not None:
-        # Taken straight after the spot price, so levels convert to futures at a matching ratio.
+        # Taken straight after the spot price, so levels convert to futures at a matching ratio,
+        # from the contract we trade (see contracts.py), recorded so a later switch can be allowed for.
+        from bsnn import contracts
+
+        contract = contracts.futures_ticker(futures.symbol, snapshot_time)
         try:
-            chain["futuresPrice"] = latest_price(futures.price_ticker)
+            chain["futuresPrice"] = latest_price(contract)
+            chain["futuresTicker"] = contract
         except Exception:
-            log.warning("Couldn't fetch %s alongside %s", futures.price_ticker, ticker, exc_info=True)
+            log.warning("Couldn't fetch %s alongside %s", contract, ticker, exc_info=True)
     if save and snapshot_problem(chain) is None:
         save_option_snapshot(chain, directory)
     return chain

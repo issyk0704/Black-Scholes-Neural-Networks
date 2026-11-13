@@ -48,7 +48,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bsnn import __version__, instruments, levels_checks, levels_record, levels_scorecard, market_data, paths
+from bsnn import __version__, contracts, instruments, levels_checks, levels_record, levels_scorecard, market_data, paths
 from bsnn.levels import (DEFAULT_MARKETS, SOURCES, HorizonLevels, MarketLevels, ZeroDteLevels, levels_for,
                          live_zero_dte, session_for)
 
@@ -169,9 +169,15 @@ def _own_line(levels: MarketLevels, h: HorizonLevels) -> str | None:
             f"· PW {_option_price(own.put_wall)}")
 
 
+def _futures_name(levels: MarketLevels) -> str:
+    """E.g. "NQ Dec 26", or "NQ" when priced from the continuous symbol."""
+    name = contracts.contract_name(levels.contract) if levels.contract else "front"
+    return levels.symbol if name == "front" else f"{levels.symbol} {name}"
+
+
 def _measured_at(levels: MarketLevels) -> str:
-    """E.g. "NQ 30,882 (QQQ 745.74)"."""
-    return (f"{levels.symbol} {levels.in_futures(levels.measured_at):,.0f} "
+    """E.g. "NQ Dec 26 30,882 (QQQ 745.74)"."""
+    return (f"{_futures_name(levels)} {levels.in_futures(levels.measured_at):,.0f} "
             f"({levels.source.lstrip('^')} {levels.measured_at:,.2f})")
 
 
@@ -404,7 +410,7 @@ def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | No
         try:
             levels = (live_zero_dte(symbol, source) if zero_dte
                       else levels_for(symbol, before=before, prefer=source, refresh_oi=True,
-                                      price_now=(prices or {}).get(symbol)))
+                                      price_now=(prices or {}).get(symbol), contract=contract_for(symbol)))
         except Exception as exc:
             print(f"{symbol}: {exc}", file=sys.stderr)
             levels = None
@@ -415,14 +421,18 @@ def gather(markets: list[str], zero_dte: bool, source: str, before: dt.date | No
     return found, missing
 
 
+def contract_for(symbol: str) -> str:
+    """The futures contract a market's card is priced in: ours by the open-interest rule (contracts.py)."""
+    return contracts.futures_ticker(symbol)
+
+
 def current_prices(markets: list[str]) -> dict[str, float]:
-    """The latest futures price for each market; one that can't be fetched is left out
-    (its card then measures levels at the snapshot's price and shows no range around price)."""
+    """The latest futures price for each market, from :func:`contract_for`; one that can't be fetched
+    is left out (its card then measures levels at the snapshot's price and shows no range around price)."""
     prices = {}
     for symbol in markets:
-        inst = instruments.resolve(symbol)
         try:
-            prices[symbol] = market_data.latest_price(inst.price_ticker)
+            prices[symbol] = market_data.latest_price(contract_for(symbol))
         except Exception as exc:
             print(f"{symbol}: no current price ({exc})", file=sys.stderr)
     return prices

@@ -34,7 +34,7 @@ DEFAULT_MARKETS = ("NQ", "ES", "YM")
 SOURCES = ("etf", "index")  # which options to read first: QQQ/SPY/DIA, or NDX/SPX
 
 
-def futures_ratio(inst: instruments.Instrument, raw: pd.DataFrame) -> float:
+def futures_ratio(inst: instruments.Instrument, raw: pd.DataFrame, contract: str | None = None) -> float:
     """Futures price / option underlying price when the snapshot was taken (e.g. NQ / QQQ).
 
     Uses the futures price recorded with the snapshot. Older snapshots don't have
@@ -43,9 +43,27 @@ def futures_ratio(inst: instruments.Instrument, raw: pd.DataFrame) -> float:
     """
     spot = float(raw["underlyingPrice"].iloc[0])
     if "futuresPrice" in raw and np.isfinite(raw["futuresPrice"].iloc[0]):
-        return float(raw["futuresPrice"].iloc[0]) / spot
+        return float(raw["futuresPrice"].iloc[0]) / spot * roll_factor(inst, raw, contract)
     history = market_data.get_history(inst.price_ticker, refresh=True)
-    return market_data.unadjusted_close(history, raw["snapshotTime"].iloc[0]) / spot
+    return market_data.unadjusted_close(history, raw["snapshotTime"].iloc[0]) / spot * roll_factor(inst, raw, contract)
+
+
+def roll_factor(inst: instruments.Instrument, raw: pd.DataFrame, contract: str | None) -> float:
+    """How much to scale a snapshot's futures/ETF ratio so the levels land in ``contract``'s prices.
+
+    1 when the snapshot priced the same contract. After a switch (the next contract's open
+    interest overtook the current one's since the snapshot was read), it's the two contracts'
+    price ratio now, about 1.01 for NQ Mar over Dec. Snapshots from before contracts were
+    recorded priced the continuous symbol (NQ=F). Raises if a price can't be fetched, so the
+    market is left out rather than posted at the wrong contract's prices.
+    """
+    if not contract:
+        return 1.0
+    taken = raw["futuresTicker"].iloc[0] if "futuresTicker" in raw else None
+    taken = taken if isinstance(taken, str) and taken else inst.price_ticker
+    if taken == contract:
+        return 1.0
+    return market_data.latest_price(contract) / market_data.latest_price(taken)
 
 
 def option_sources(inst: instruments.Instrument, prefer: str = "etf") -> list[str]:
@@ -151,6 +169,7 @@ class MarketLevels:
     one_day_move_pct: float
     open_interest_time: pd.Timestamp | None = None  # New York; set when newer open interest replaced the snapshot's
     session: pd.Timestamp | None = None  # the trading day the levels are for
+    contract: str = ""  # Yahoo symbol of the futures contract the levels are in, e.g. NQZ26.CME
     horizons: list[HorizonLevels] = field(default_factory=list)  # today, this week, this month
     sources: tuple[str, ...] = ()  # every chain added into the levels, e.g. ("QQQ", "^NDX"); source first
     measured_at: float = np.nan  # underlying price the gamma levels were measured at, when not the snapshot's
@@ -200,7 +219,8 @@ def combine(dataset: pd.DataFrame, others: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timestamp | None = None,
-                   session=None, others: list[pd.DataFrame] = (), price_now: float | None = None) -> MarketLevels | None:
+                   session=None, others: list[pd.DataFrame] = (), price_now: float | None = None,
+                   contract: str | None = None) -> MarketLevels | None:
     """Levels from a saved chain plus ``others`` (raw chains for the same market and day),
     or None if the first chain has no usable quotes or open interest.
 
@@ -211,7 +231,8 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     ``price_now`` is the current futures price. When given, the gamma levels are measured
     there (converted at the snapshot's ratio) rather than at the snapshot's price: walls
     are the most gamma above and below where price is now, not where it closed. The
-    contracts keep their vols and times to expiry.
+    contracts keep their vols and times to expiry. ``contract`` is the futures contract
+    ``price_now`` is from (see :func:`roll_factor`).
     """
     own = usable_dataset(raw)
     if own is None:
@@ -222,7 +243,7 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     day = analytics.one_day_move(moves)
     inst = instruments.resolve(symbol)
     try:
-        ratio = futures_ratio(inst, raw) if inst else np.nan
+        ratio = futures_ratio(inst, raw, contract) if inst else np.nan
     except Exception:
         ratio = np.nan
     measured_at = price_now / ratio if price_now and np.isfinite(ratio) else np.nan
@@ -234,7 +255,7 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
     horizons = compute_horizons(dataset, session, moves)
     calls, puts = busiest_today(own, snapshot_time, session)
     return MarketLevels(
-        symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time,
+        symbol=symbol, source=raw["ticker"].iloc[0], snapshot_time=snapshot_time, contract=contract or "",
         spot=float(raw["underlyingPrice"].iloc[0]), ratio=ratio, net_gamma=gamma["net"], flip=gamma["flip"], call_wall=gamma["call_wall"],
         put_wall=gamma["put_wall"], one_day_move_pct=day["move_pct"] if day else np.nan,
         open_interest_time=open_interest_time, session=session, horizons=horizons,
@@ -358,7 +379,8 @@ def same_day_chains(symbol: str, sources: list[str], day: pd.Timestamp, before, 
 
 
 def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: str = "etf",
-               refresh_oi: bool = False, price_now: float | None = None) -> MarketLevels | None:
+               refresh_oi: bool = False, price_now: float | None = None,
+               contract: str | None = None) -> MarketLevels | None:
     """Levels for a watchlist market from its newest usable snapshots (see :func:`option_sources`).
 
     The first source with a usable snapshot sets the prices; the other sources' chains
@@ -378,7 +400,7 @@ def levels_for(symbol: str, before=None, directory: Path | None = None, prefer: 
         if path is not None:
             raw, oi_time = read_snapshot(symbol, source, path, refresh_oi)
             others = same_day_chains(symbol, sources[i + 1:], snapshot_date(path), before, directory, refresh_oi)
-            levels = compute_levels(symbol, raw, oi_time, session, others, price_now)
+            levels = compute_levels(symbol, raw, oi_time, session, others, price_now, contract)
             if levels is not None:
                 return levels
     return None
