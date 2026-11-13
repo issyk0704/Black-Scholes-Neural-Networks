@@ -81,14 +81,29 @@ S&P 500 options notional, so ES levels from SPY by itself missed most of the pos
 chain is restated in the ETF's prices (strikes × ETF/index, with the contract size scaled the
 other way so each contract keeps its dollar gamma), then the levels convert to futures at the
 futures/ETF ratio. Each card has three columns, **today**, **this week** (to Friday) and **this
-month** (to its last weekday), and each column shows:
+month** (to its last weekday). Each column is a **price ladder**: its mood (🟢 **calm**: positive
+gamma, moves tend to snap back; 🔴 **fast**: negative gamma, moves tend to run), then every price
+top to bottom, as on the chart, each saying what it is, with **◀ PRICE NOW** marked:
 
-- the mood (🟢 **calm**: positive gamma, moves tend to snap back; 🔴 **fast**: negative gamma, moves
-  tend to run), then the **ceiling** (call wall), **pivot** (gamma flip) and **floor** (put wall) in
-  futures points, listed by price from the top as they sit on the chart. They come from **only the
+```
+**28,119**  Outer high · rarely reached
+**28,087**  Expected high
+**28,018**  Ceiling · may stall here (busy strike)
+**27,964**  ◀ PRICE NOW
+**27,812**  Floor · may bounce here (busy strike)
+**27,810**  Outer low · rarely reached
+```
+
+All prices are futures points (the card names the contract, e.g. "In NQ Dec 26 prices"); the ETF's
+own levels stay in the record but off the card, being in a different unit. A "💡 How to read" box
+ends the last card. The ladder holds:
+
+- the **ceiling** (call wall), **pivot** (gamma flip) and **floor** (put wall), from **only the
   options expiring by the end of that column**: the positioning dealers must hedge before that
-  candle closes; longer-dated options belong to the later columns;
-- the ETF's own flip and walls, in ETF prices (e.g. `QQQ alone: flip 748.23 · CW 760 · PW 750`);
+  candle closes; longer-dated options belong to the later columns. Ceiling and floor are always
+  above and below price; the pivot can sit anywhere (with none within ±15%, the column says the
+  whole area is fast or calm);
+- on today's column during US hours, the **busiest 0DTE strikes** by volume;
 - the **expected** range (the at-the-money straddle, √(2/π) ≈ 0.8 of one standard deviation: the
   average size of the move) and the **outer** range (one standard deviation) to the column's end,
   around the current futures price. Our record from 13 Oct to 12 Nov found the NY session's range
@@ -122,8 +137,18 @@ so a problem shows as a red run rather than a wrong card.
 updates at **09:45, 10:45 and 14:45 New York** (just before the 09:50, 10:50 and 14:50 ICT macros)
 and manual posts then **edit that card in place**, with "as of HH:MM New York / HH:MM UK" in its
 heading. They read the live chains, so the levels move with price, and they add the **busiest 0DTE
-strikes** by volume (open interest only changes overnight, so volume is the one same-day view of
-positioning). `--new-message` posts a separate card instead (later edits update that one). 0DTE
+strikes** to today's ladder (open interest only changes overnight, so volume is the one same-day
+view of positioning).
+
+**Which futures contract.** NQ, ES, YM and RTY levels are priced in the contract we trade: we stay on
+the current quarterly contract until the **next one's open interest is higher**, then switch
+(`contracts.py`, open interest from Yahoo's quote for each contract, e.g. `NQZ26.CME`). Yahoo's
+continuous symbols (NQ=F) roll on their own dates, and NQ Mar trades about 1% (300+ points) above
+Dec, so following them would shift every level without warning. Each snapshot records the contract
+its futures price came from; when the card's contract differs (a switch since the snapshot), the
+futures/ETF ratio is rescaled by the two contracts' prices now. If either price can't be fetched the
+market is left out rather than posted in the wrong contract's prices. Each card is scored against
+the bars of the contract it was posted in. `--new-message` posts a separate card instead (later edits update that one). 0DTE
 updates are always separate messages.
 
 **Scorecards.** Every card scores the finished morning cards against the New York cash session
