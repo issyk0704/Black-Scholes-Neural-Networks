@@ -22,10 +22,11 @@ after it the next weekday. Before a morning card is posted it must pass the
 checks in levels_checks; a market that fails is left out and the run fails.
 
 The scheduled post starts each day's card. Scheduled updates at 09:45, 10:45 and
-14:45 New York (just before the ICT macros) and manual posts then edit that card
-in place (its heading says when, in New York and UK time), so refreshes don't add
-messages; --new-message posts a separate card instead. A card read from live chains
-also lists the most-traded 0DTE strikes.
+14:45 New York (just before the ICT macros) are each a NEW message with its own copy
+box, headed "update at 09:45 New York / 14:45 UK"; last week's or month's scorecard
+stays on the morning card only. A manual post edits the newest card in place (its
+heading says when); --new-message posts a separate card instead. A card read from
+live chains also lists the most-traded 0DTE strikes.
 
 The webhook URL is a secret: keep it in an environment variable (or a GitHub
 Actions secret), never in a file.
@@ -342,9 +343,9 @@ def tradingview_line(levels: MarketLevels, live_price: float | None, as_of: pd.T
 
 
 def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float], today: dt.date,
-                  as_of: pd.Timestamp | None = None, review: dict | None = None) -> dict:
-    """The full webhook payload: a heading (with the New York time ``as_of``, if given), one card per
-    market and, on the week's or month's first card, the ``review`` scorecard last."""
+                  as_of: pd.Timestamp | None = None, review: dict | None = None, update: bool = False) -> dict:
+    """The full webhook payload: a heading (with the New York time ``as_of``, if given; "update at" for an
+    intraday update), one card per market and, on the week's or month's first card, the ``review`` scorecard last."""
     zero_dte = bool(all_levels) and isinstance(all_levels[0], ZeroDteLevels)
     make = zero_dte_embed if zero_dte else market_embed
     embeds = [make(lv, live_prices.get(lv.symbol)) for lv in all_levels]
@@ -359,7 +360,7 @@ def build_message(all_levels: list[MarketLevels], live_prices: dict[str, float],
     else:
         heading = f"**Options levels for {today:%A %d %B %Y}**"
         if as_of is not None:
-            heading += (f" · as of {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
+            heading += (f" · {'update at' if update else 'as of'} {as_of.tz_convert(market_data.MARKET_TZ):%H:%M} New York"
                         f" / {as_of.tz_convert(UK_TZ):%H:%M} UK")
     return {"username": "Options levels", "content": heading, "embeds": embeds}
 
@@ -568,8 +569,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Nothing to post.", file=sys.stderr)
         return 1
     day = today if args.zero_dte else session.date()
-    review = None if args.zero_dte else scorecard(session)
-    payload = build_message(all_levels, live_prices, day, as_of=now, review=review)
+    is_update = slot in UPDATE_SLOTS
+    review = None if args.zero_dte or is_update else scorecard(session)  # the scorecard: morning card only
+    payload = build_message(all_levels, live_prices, day, as_of=now, review=review, update=is_update)
     copy = None if args.zero_dte else copy_message(all_levels, live_prices, now)
 
     status = 1 if missing else 0  # a market left out fails the run, after posting the others
@@ -582,10 +584,9 @@ def main(argv: list[str] | None = None) -> int:
     if not webhook:
         print("Set DISCORD_WEBHOOK_URL to the channel's webhook URL to post.", file=sys.stderr)
         return 1
-    # The scheduled post and 0DTE updates are always new messages; a manual post edits the day's card.
-    # Scheduled intraday updates edit it too (or post it, if the morning card is missing).
-    is_update = slot in UPDATE_SLOTS
-    update = is_update or not (slot or args.zero_dte or args.new_message)
+    # Scheduled posts (the morning card and each intraday update) and 0DTE updates are always new messages;
+    # a scheduled one becomes the day's newest card, which a manual post edits.
+    update = not (slot or args.zero_dte or args.new_message)
     store = paths.DATA_DIR / "levels_messages.json"
     action, message_id = send(webhook, payload, day, store, update,
                               remember=not args.zero_dte)  # a 0DTE update never becomes the day's card
