@@ -22,7 +22,9 @@ That isn't always true, so the levels are a guide, not a fact:
 - put wall: the strike below spot with the most put gamma, often support.
   (Gamma peaks at the money, so without the above/below rule the "wall" tends to
   be the at-the-money strike, i.e. wherever price happened to be.)
-- gamma flip: the price at which net gamma changes sign.
+- gamma flip: the price at which net gamma changes sign from negative (below) to positive
+  (above), so price above it is calm and below it fast. When spot is fast it is the first
+  such crossing above spot; when calm, the first below.
 """
 
 from __future__ import annotations
@@ -205,16 +207,28 @@ def gamma_levels(df: pd.DataFrame, width: float = 0.15, points: int = 301) -> di
         "net": float(by_strike["net"].sum()),
         "call_wall": float(calls_above.idxmax()) if len(calls_above) and calls_above.max() > 0 else np.nan,
         "put_wall": float(puts_below.idxmin()) if len(puts_below) and puts_below.min() < 0 else np.nan,
-        "flip": _zero_crossing_nearest(spots, curve, spot),
+        "flip": _pivot(spots, curve, spot),
         "curve": (spots, curve),
         "by_strike": by_strike,
     }
 
 
-def _zero_crossing_nearest(x: np.ndarray, y: np.ndarray, target: float) -> float:
-    """Where ``y`` crosses zero, linearly interpolated; the crossing closest to ``target``."""
+def _pivot(x: np.ndarray, y: np.ndarray, spot: float) -> float:
+    """The gamma flip: where ``y`` (net gamma against price ``x``, ascending) turns from negative
+    below to positive above, nearest to ``spot`` on the side that keeps "above = calm, below =
+    fast" true at spot. Fast at spot: the first crossing above it; calm: the first below it.
+    Linearly interpolated; NaN when there is none on that side within ``x``.
+
+    The nearest crossing of either kind is not enough: a crossing the other way round (calm
+    below, fast above) can sit closer, e.g. thin far-from-the-money strikes 12% below price,
+    and would be read upside down.
+    """
     crossings = np.where(np.sign(y[:-1]) * np.sign(y[1:]) < 0)[0]
-    if crossings.size == 0:
-        return np.nan
     roots = x[crossings] - y[crossings] * (x[crossings + 1] - x[crossings]) / (y[crossings + 1] - y[crossings])
-    return float(roots[np.abs(roots - target).argmin()])
+    rising = y[crossings + 1] > y[crossings]
+    at_spot = float(np.interp(spot, x, y))
+    if at_spot < 0:
+        side = roots[rising & (roots > spot)]
+        return float(side.min()) if side.size else np.nan
+    side = roots[rising & (roots < spot)]
+    return float(side.max()) if side.size else np.nan

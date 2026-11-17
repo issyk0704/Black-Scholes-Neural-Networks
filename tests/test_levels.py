@@ -524,7 +524,10 @@ def test_levels_add_up_every_chain_in_the_first_chains_prices():
     assert ndx_gamma == pytest.approx(call_gamma(own) * 4.1, rel=0.05)
     assert call_gamma(lv.combine(own, [other])) == pytest.approx(call_gamma(own) + ndx_gamma, rel=1e-9)
     assert both.horizons[1].call_wall == pytest.approx(alone.horizons[1].call_wall)
-    assert both.horizons[1].flip == pytest.approx(alone.horizons[1].flip, rel=1e-3)
+    # This chain's net gamma only crosses zero falling (calm below, fast above), so neither has a pivot
+    # (analytics._pivot); adding NDX must not invent one.
+    assert both.horizons[1].flip == pytest.approx(alone.horizons[1].flip, rel=1e-3, nan_ok=True)
+    assert both.horizons[1].put_wall == pytest.approx(alone.horizons[1].put_wall)
     assert [h.net_gamma for h in both.own_horizons] == [h.net_gamma for h in alone.horizons]
     assert alone.sources == ("QQQ",) and alone.own_horizons is alone.horizons
 

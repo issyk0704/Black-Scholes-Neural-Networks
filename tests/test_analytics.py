@@ -121,10 +121,31 @@ def test_no_flip_when_gamma_never_changes_sign(flat):
     assert levels["net"] > 0 and np.isnan(levels["flip"]) and np.isnan(levels["put_wall"])
 
 
-def test_zero_crossing_picks_nearest_root():
-    x = np.linspace(0, 10, 101)
-    y = np.sin(x)  # roots at pi, 2pi, 3pi
-    assert analytics._zero_crossing_nearest(x, y, 6.0) == pytest.approx(2 * np.pi, abs=0.01)
+def test_pivot_is_the_rising_crossing_on_the_right_side_of_spot():
+    x = np.linspace(0, 10, 1001)
+    y = np.sin(x)  # falls through zero at pi and 3pi, rises through it at 2pi
+    assert analytics._pivot(x, y, 6.0) == pytest.approx(2 * np.pi, abs=0.01)
+    # Fast at 4 (sin < 0): pi is nearer, but gamma is positive BELOW it, so "above = calm" would be
+    # false there. The pivot is the first rising crossing above: 2pi.
+    assert analytics._pivot(x, y, 4.0) == pytest.approx(2 * np.pi, abs=0.01)
+    # Calm at 8.5: 3pi is nearer but falls; the pivot is the first rising crossing below: 2pi.
+    assert analytics._pivot(x, y, 8.5) == pytest.approx(2 * np.pi, abs=0.01)
+    # Calm at 1 with no rising crossing below: no pivot.
+    assert np.isnan(analytics._pivot(x, y, 1.0))
+
+
+def test_no_upside_down_pivot_far_below_price(flat):
+    # 17 Nov 2026, YM 09:46: net gamma negative at spot, nothing turning positive above it, but heavy
+    # call open interest deep below spot made the curve positive down there. The old nearest-crossing
+    # rule posted that crossing as the pivot (44,977 against price 51,323) with "above = calm" while
+    # every price above it was fast. Now: no pivot, and the card says fast at every price nearby.
+    oi = np.where(flat["is_call"] == 1, np.where(flat["K"] <= 88, 20_000.0, 0.0),
+                  np.where((flat["K"] >= 95) & (flat["K"] <= 105), 5000.0, 0.0))
+    levels = analytics.gamma_levels(flat.assign(open_interest=oi))
+    spots, curve = levels["curve"]
+    old_nearest_crossings = np.where(np.sign(curve[:-1]) * np.sign(curve[1:]) < 0)[0]
+    assert levels["net"] < 0 and old_nearest_crossings.size and spots[old_nearest_crossings].max() < 100
+    assert np.isnan(levels["flip"])
 
 
 def test_front_expiry_prefers_today():
