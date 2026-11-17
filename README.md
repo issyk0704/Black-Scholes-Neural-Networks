@@ -134,9 +134,11 @@ month. A market that fails is left out with the reasons, the others are posted, 
 so a problem shows as a red run rather than a wrong card.
 
 **A morning card, then a new card before each macro.** The 09:15 post starts the day. Scheduled
-updates at **09:45, 10:45 and 14:45 New York** (just before the 09:50, 10:50 and 14:50 ICT macros)
+updates at **10:45 and 14:45 New York** (just before the 10:50 and 14:50 ICT macros)
 are each **a new message** headed "update at HH:MM New York / HH:MM UK", with its own copy box, so
 every update shows in the channel; last week's or month's scorecard stays on the morning card only.
+There is no 09:45 update: it came half an hour after the morning card and read the thin quotes just after
+the open (dropped 17 Nov 2026). A manual post covers a big move at the open.
 A manual post **edits the newest card in place** ("as of HH:MM …"). The updates read the live chains, so the levels move with price, and they add the **busiest 0DTE
 strikes** to today's ladder (open interest only changes overnight, so volume is the one same-day
 view of positioning).
@@ -189,11 +191,11 @@ the morning's open interest: positions opened today, and whether volume was buyi
 can't be seen in free data.
 
 In the cloud, a workflow in the private data repository posts the day, week and month levels
-each weekday at **09:15** New York time and updates them at 09:45, 10:45 and 14:45. It reads the webhook URL from a GitHub Actions secret.
+each weekday at **09:15** New York time and updates them at 10:45 and 14:45. It reads the webhook URL from a GitHub Actions secret.
 GitHub's own schedules can start hours late, so a free [cron-job.org](https://cron-job.org) account
-starts the workflows on time through GitHub's API (09:15 card; 09:45, 10:45 and 14:45 updates;
-16:30 collection); `.\scripts\register-cron-jobs.ps1` creates those jobs, and deletes the retired
-0DTE ones.
+starts the workflows on time through GitHub's API (09:15 card; 10:45 and 14:45 updates;
+16:30 collection); `.\scripts\register-cron-jobs.ps1` creates those jobs, brings an existing job's times in line
+with the script, and deletes the retired 0DTE ones.
 
 The **Moves & gamma** tab has the same 0DTE view ("Gamma from: 0DTE"), a volume-by-strike chart,
 and a 15-minute auto-refresh during US hours.

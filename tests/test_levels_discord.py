@@ -146,7 +146,7 @@ def test_scheduled_update_is_a_new_message_with_its_own_copy_box(discord, monkey
     assert calls[1][2]["content"] == "**Options levels for Tuesday 06 October 2026** · update at 09:15 New York / 14:15 UK"
     assert [(r["kind"], r["message_id"]) for r in records(tmp_path)] == [("scheduled", "m1"), ("update", "m2")]
     assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m2", "2026-10-06-copy": "c2"}  # manual edits go to the newest
-    assert "update-09:45" in (tmp_path / "levels_posted.txt").read_text()
+    assert "update-10:45" in (tmp_path / "levels_posted.txt").read_text()
 
 
 def test_the_scorecard_is_on_the_morning_card_only(discord, monkeypatch):
@@ -154,7 +154,7 @@ def test_the_scorecard_is_on_the_morning_card_only(discord, monkeypatch):
     review = {"title": "Last week's scorecard", "fields": []}
     monkeypatch.setattr(levels_cli, "scorecard", lambda session: review)
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
-    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[2], ""))
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[1], ""))
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
     morning, update = calls[0][2], calls[1][2]
     assert morning["embeds"][-1] is review and review not in update["embeds"]
@@ -163,7 +163,7 @@ def test_the_scorecard_is_on_the_morning_card_only(discord, monkeypatch):
 
 def test_scheduled_update_without_a_morning_card_posts_one(discord, monkeypatch):
     calls, tmp_path = discord
-    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[1], ""))
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[0], ""))
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
     assert [kind for kind, _, _ in calls] == ["post"]
     assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1", "2026-10-06-copy": "c1"}

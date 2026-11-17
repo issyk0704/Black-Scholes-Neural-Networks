@@ -9,7 +9,8 @@
 #   2. A cron-job.org API key: cron-job.org > Settings > API.
 #
 # Run from the repository root:   .\scripts\register-cron-jobs.ps1
-# Running it again skips jobs that already exist (matched by title) and deletes retired ones.
+# Running it again updates the times of jobs that already exist (matched by title) when they differ,
+# and deletes retired ones. The GitHub token is only asked for when a job has to be created.
 
 $ErrorActionPreference = "Stop"
 $repo = "issyk0704/bsnn-data"
@@ -17,12 +18,12 @@ $weekdays = @(1, 2, 3, 4, 5)  # cron-job.org counts 0 = Sunday
 
 $jobs = @(
     @{ Title = "BSNN daily levels"; Workflow = "levels.yml";   Hours = @(9);      Minutes = @(15); Inputs = @{ post_now = $false } }
-    # Edits the day's card at 09:45, 10:45 and 14:45, just before the ICT macros.
-    @{ Title = "BSNN levels updates"; Workflow = "levels.yml"; Hours = @(9, 10, 14); Minutes = @(45); Inputs = @{ post_now = $false } }
+    # A new card at 10:45 and 14:45, just before the 10:50 and 14:50 ICT macros (no 09:45 update since 17 Nov 2026).
+    @{ Title = "BSNN levels updates"; Workflow = "levels.yml"; Hours = @(10, 14); Minutes = @(45); Inputs = @{ post_now = $false } }
     @{ Title = "BSNN collect";      Workflow = "collect.yml";  Hours = @(16);     Minutes = @(30); Inputs = @{ force = $false } }
 )
 
-$githubToken = Read-Host "GitHub token (bsnn-data, Actions read/write)" -AsSecureString | ConvertFrom-SecureString -AsPlainText
+$githubToken = $null
 $cronKey = Read-Host "cron-job.org API key" -AsSecureString | ConvertFrom-SecureString -AsPlainText
 $api = @{ Authorization = "Bearer $cronKey" }
 
@@ -36,11 +37,32 @@ foreach ($old in $current | Where-Object { $retired -contains $_.title }) {
     Start-Sleep -Seconds 1
 }
 
-$existing = $current.title
 foreach ($job in $jobs) {
-    if ($existing -contains $job.Title) {
-        Write-Host "Exists already, skipped: $($job.Title)"
+    $found = $current | Where-Object { $_.title -eq $job.Title } | Select-Object -First 1
+    if ($found) {
+        $hours = @($found.schedule.hours) -join ","
+        $minutes = @($found.schedule.minutes) -join ","
+        if ($hours -eq ($job.Hours -join ",") -and $minutes -eq ($job.Minutes -join ",")) {
+            Write-Host "Exists already, times match: $($job.Title)"
+            continue
+        }
+        $patch = @{ job = @{ schedule = @{
+            timezone  = "America/New_York"
+            expiresAt = 0
+            hours     = $job.Hours
+            minutes   = $job.Minutes
+            mdays     = @(-1)
+            months    = @(-1)
+            wdays     = $weekdays
+        } } } | ConvertTo-Json -Depth 4
+        Invoke-RestMethod "https://api.cron-job.org/jobs/$($found.jobId)" -Method Patch -Headers $api `
+            -ContentType "application/json" -Body $patch | Out-Null
+        Write-Host "Updated times: $($job.Title) (job $($found.jobId)) hours $hours -> $($job.Hours -join ','), minutes $minutes -> $($job.Minutes -join ',')"
+        Start-Sleep -Seconds 1
         continue
+    }
+    if (-not $githubToken) {
+        $githubToken = Read-Host "GitHub token (bsnn-data, Actions read/write)" -AsSecureString | ConvertFrom-SecureString -AsPlainText
     }
     $body = @{
         job = @{
