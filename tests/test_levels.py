@@ -605,8 +605,9 @@ ALL_SLOTS = (levels_cli.DAILY_SLOT,) + levels_cli.UPDATE_SLOTS
 
 @pytest.mark.parametrize("when, posted, expected", [
     ("2026-10-06 13:39", "", "daily"),                                 # 09:39 New York: still the morning card
-    ("2026-10-06 13:45", "2026-10-06 daily", "update-09:45"),          # just before the 09:50 macro
-    ("2026-10-06 14:45", "2026-10-06 update-09:45", "update-10:45"),
+    ("2026-10-06 14:15", "", "daily"),                                 # 10:15: a late morning card still posts
+    ("2026-10-06 13:45", "2026-10-06 daily", None),                    # no 09:45 update any more
+    ("2026-10-06 14:45", "2026-10-06 daily", "update-10:45"),          # just before the 10:50 macro
     ("2026-10-06 18:45", "", "update-14:45"),                          # 14:45, after the PM macro window opens
     ("2026-10-06 18:50", "2026-10-06 update-14:45", None),             # already updated
     ("2026-10-06 16:00", "", None),                                    # 12:00: between slots
