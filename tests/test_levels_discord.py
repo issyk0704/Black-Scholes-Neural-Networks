@@ -136,14 +136,29 @@ def test_post_waits_for_the_message_id_and_edit_patches_it(monkeypatch):
     assert "username" not in edit_body and edit_body["content"] == "x"
 
 
-def test_scheduled_update_edits_the_days_card(discord, monkeypatch):
+def test_scheduled_update_is_a_new_message_with_its_own_copy_box(discord, monkeypatch):
     calls, tmp_path = discord
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
     monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[0], ""))
     assert levels_cli.main(["--markets", "NQ", "--post", "--scheduled"]) == 0
-    assert [(kind, message_id) for kind, message_id, _ in calls] == [("post", None), ("edit", "m1")]
-    assert [r["kind"] for r in records(tmp_path)] == ["scheduled", "update"]
+    assert [(kind, message_id) for kind, message_id, _ in calls] == [("post", None), ("post", None)]
+    assert [kind for kind, _, _ in calls.copies] == ["post", "post"]
+    assert calls[1][2]["content"] == "**Options levels for Tuesday 06 October 2026** · update at 09:15 New York / 14:15 UK"
+    assert [(r["kind"], r["message_id"]) for r in records(tmp_path)] == [("scheduled", "m1"), ("update", "m2")]
+    assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m2", "2026-10-06-copy": "c2"}  # manual edits go to the newest
     assert "update-09:45" in (tmp_path / "levels_posted.txt").read_text()
+
+
+def test_the_scorecard_is_on_the_morning_card_only(discord, monkeypatch):
+    calls, _ = discord
+    review = {"title": "Last week's scorecard", "fields": []}
+    monkeypatch.setattr(levels_cli, "scorecard", lambda session: review)
+    levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[2], ""))
+    levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
+    morning, update = calls[0][2], calls[1][2]
+    assert morning["embeds"][-1] is review and review not in update["embeds"]
+    assert " · as of " in morning["content"] and " · update at " in update["content"]
 
 
 def test_scheduled_update_without_a_morning_card_posts_one(discord, monkeypatch):
@@ -151,7 +166,7 @@ def test_scheduled_update_without_a_morning_card_posts_one(discord, monkeypatch)
     monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[1], ""))
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
     assert [kind for kind, _, _ in calls] == ["post"]
-    assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1", "2026-10-06-copy": "c1"}  # later updates edit them
+    assert json.loads((tmp_path / "levels_messages.json").read_text()) == {"2026-10-06": "m1", "2026-10-06-copy": "c1"}
 
 
 def test_a_copy_message_follows_each_new_card_and_is_edited_with_it(discord):

@@ -133,14 +133,15 @@ above that price and put walls below it, and a 1σ of a sane size that widens fr
 month. A market that fails is left out with the reasons, the others are posted, and the run fails,
 so a problem shows as a red run rather than a wrong card.
 
-**One card a day, updated before each macro.** The 09:15 post starts the day's card. Scheduled
+**A morning card, then a new card before each macro.** The 09:15 post starts the day. Scheduled
 updates at **09:45, 10:45 and 14:45 New York** (just before the 09:50, 10:50 and 14:50 ICT macros)
-and manual posts then **edit that card in place**, with "as of HH:MM New York / HH:MM UK" in its
-heading. They read the live chains, so the levels move with price, and they add the **busiest 0DTE
+are each **a new message** headed "update at HH:MM New York / HH:MM UK", with its own copy box, so
+every update shows in the channel; last week's or month's scorecard stays on the morning card only.
+A manual post **edits the newest card in place** ("as of HH:MM …"). The updates read the live chains, so the levels move with price, and they add the **busiest 0DTE
 strikes** to today's ladder (open interest only changes overnight, so volume is the one same-day
 view of positioning).
 
-**On TradingView.** Each card is followed by a small **copy message**: a code box with one line per market (`NQ Z26 2026-11-16 09:45 | D F ceiling pivot floor expected-low expected-high outer-low outer-high | W … | M …`, prices to the nearest quarter point) for the TradingViewIndicators `Options-Levels` script, which also reads the card text itself. A new card gets a new copy message right under it; an edited card (updates, manual posts) edits its copy message too (stored as `<day>-copy` in `levels_messages.json`). 0DTE posts have none.
+**On TradingView.** Each card is followed by a small **copy message**: a code box with one line per market (`NQ Z26 2026-11-16 09:45 | D F ceiling pivot floor expected-low expected-high outer-low outer-high | W … | M …`, prices to the nearest quarter point) for the TradingViewIndicators `Options-Levels` script, which also reads the card text itself. A new card (the morning card, each update) gets a new copy message right under it; an edited card (manual posts) edits its copy message too (stored as `<day>-copy` in `levels_messages.json`). 0DTE posts have none.
 
 **Which futures contract.** NQ, ES, YM and RTY levels are priced in the contract we trade: we stay on
 the current quarterly contract until the **next one's open interest is higher**, then switch
