@@ -611,6 +611,8 @@ ALL_SLOTS = (levels_cli.DAILY_SLOT,) + levels_cli.UPDATE_SLOTS
     ("2026-10-06 18:45", "", "update-14:45"),                          # 14:45, after the PM macro window opens
     ("2026-10-06 18:50", "2026-10-06 update-14:45", None),             # already updated
     ("2026-10-06 16:00", "", None),                                    # 12:00: between slots
+    ("2026-10-06 16:45", "2026-10-06 update-10:45", "update-12:45"),   # 12:45, before the NY PM session
+    ("2026-10-06 17:35", "", None),                                    # 13:35: the 12:45 window has closed
     ("2026-12-08 15:45", "", "update-10:45"),                          # winter: 10:45 New York = 15:45 UTC
 ])
 def test_update_slots(tmp_path, when, posted, expected):
