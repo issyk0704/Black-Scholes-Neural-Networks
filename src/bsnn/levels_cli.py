@@ -2,7 +2,7 @@
 
     bsnn-levels                         # print the message as JSON (nothing is sent)
     bsnn-levels --post                  # send it to the webhook in DISCORD_WEBHOOK_URL
-    bsnn-levels --post --scheduled      # send in the morning slot (09:15) or an update slot (10:45, 14:45)
+    bsnn-levels --post --scheduled      # send in the morning slot (09:15) or an update slot (10:45, 12:45, 14:45)
     bsnn-levels --post --new-message    # post a separate card instead of updating the day's
     bsnn-levels --zero-dte              # today's 0DTE levels from live chains (US hours only)
     bsnn-levels --markets NQ ES
@@ -21,8 +21,8 @@ The posting day follows the clock: before the 16:00 New York close it's today,
 after it the next weekday. Before a morning card is posted it must pass the
 checks in levels_checks; a market that fails is left out and the run fails.
 
-The scheduled post starts each day's card. Scheduled updates at 10:45 and 14:45
-New York (just before the 10:50 and 14:50 ICT macros) are each a NEW message with its own
+The scheduled post starts each day's card. Scheduled updates at 10:45, 12:45 and 14:45
+New York (just before the 10:50 macro, the 13:30 NY PM session and the 14:50 macro) are each a NEW message with its own
 copy box, headed "update at 10:45 New York / 15:45 UK". There is no 09:45 update (dropped
 17 Nov 2026): it came half an hour after the morning card, from the thinnest live quotes
 of the day. Last week's or month's scorecard
@@ -69,9 +69,11 @@ class Slot:
 
 
 DAILY_SLOT = Slot("daily", dt.time(8, 30), dt.time(10, 30))  # scheduled for 09:15; closes before the first update
-# Intraday refreshes of the day's card, each just before an ICT macro (10:50, 14:50 New York). No 09:45 update:
-# too close to the 09:15 card and read from the thin quotes just after the open (17 Nov 2026).
+# Intraday refreshes of the day's card: before the 10:50 macro, before the 13:30 NY PM session (added 18 Nov 2026)
+# and before the 14:50 macro (New York). No 09:45 update: too close to the 09:15 card and read from the thin quotes
+# just after the open (17 Nov 2026).
 UPDATE_SLOTS = (Slot("update-10:45", dt.time(10, 40), dt.time(11, 30)),
+                Slot("update-12:45", dt.time(12, 40), dt.time(13, 30)),
                 Slot("update-14:45", dt.time(14, 40), dt.time(15, 30)))
 UK_TZ = "Europe/London"
 

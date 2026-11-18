@@ -154,7 +154,7 @@ def test_the_scorecard_is_on_the_morning_card_only(discord, monkeypatch):
     review = {"title": "Last week's scorecard", "fields": []}
     monkeypatch.setattr(levels_cli, "scorecard", lambda session: review)
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
-    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[1], ""))
+    monkeypatch.setattr(levels_cli, "due_slot", lambda now, slots, marker: (levels_cli.UPDATE_SLOTS[-1], ""))
     levels_cli.main(["--markets", "NQ", "--post", "--scheduled"])
     morning, update = calls[0][2], calls[1][2]
     assert morning["embeds"][-1] is review and review not in update["embeds"]
