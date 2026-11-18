@@ -134,7 +134,7 @@ month. A market that fails is left out with the reasons, the others are posted, 
 so a problem shows as a red run rather than a wrong card.
 
 **A morning card, then a new card before each macro.** The 09:15 post starts the day. Scheduled
-updates at **10:45 and 14:45 New York** (just before the 10:50 and 14:50 ICT macros)
+updates at **10:45, 12:45 and 14:45 New York** (before the 10:50 macro, the 13:30 NY PM session and the 14:50 macro)
 are each **a new message** headed "update at HH:MM New York / HH:MM UK", with its own copy box, so
 every update shows in the channel; last week's or month's scorecard stays on the morning card only.
 There is no 09:45 update: it came half an hour after the morning card and read the thin quotes just after
@@ -191,9 +191,9 @@ the morning's open interest: positions opened today, and whether volume was buyi
 can't be seen in free data.
 
 In the cloud, a workflow in the private data repository posts the day, week and month levels
-each weekday at **09:15** New York time and updates them at 10:45 and 14:45. It reads the webhook URL from a GitHub Actions secret.
+each weekday at **09:15** New York time and updates them at 10:45, 12:45 and 14:45. It reads the webhook URL from a GitHub Actions secret.
 GitHub's own schedules can start hours late, so a free [cron-job.org](https://cron-job.org) account
-starts the workflows on time through GitHub's API (09:15 card; 10:45 and 14:45 updates;
+starts the workflows on time through GitHub's API (09:15 card; 10:45, 12:45 and 14:45 updates;
 16:30 collection); `.\scripts\register-cron-jobs.ps1` creates those jobs, brings an existing job's times in line
 with the script, and deletes the retired 0DTE ones.
 
