@@ -173,3 +173,37 @@ def test_committed_snapshots_are_loadable():
         pytest.skip("no snapshots in data/options")
     df = md.load_option_snapshots(files)
     assert np.isfinite(df["underlyingPrice"]).all()
+
+
+def test_index_chains_come_from_cboe_in_yahoos_columns():
+    payload = {"data": {"options": [
+        {"option": "SPXW261120C07400000", "bid": 10.0, "ask": 11.0, "last_trade_price": 10.5, "volume": 50,
+         "open_interest": 1200, "iv": 0.18},
+        {"option": "SPX261120P07300000", "bid": 8.0, "ask": 9.0, "volume": 5, "open_interest": 3400, "iv": 0.2},
+        {"option": "2SPX261120C07400000", "bid": 1.0, "ask": 2.0, "open_interest": 9},     # adjusted: dropped
+    ]}}
+    chain = md.cboe_chain("^SPX", get_json=lambda symbol: payload)
+    assert list(chain["contractSymbol"]) == ["SPXW261120C07400000", "SPX261120P07300000"]
+    call = chain.iloc[0]
+    assert call["strike"] == 7400.0 and call["ExpiryDate"] == "2026-11-20" and call["OptionType"] == "Call"
+    assert call["openInterest"] == 1200.0 and call["bid"] == 10.0
+    assert chain.iloc[1]["OptionType"] == "Put" and chain.iloc[1]["lastPrice"] == 0.0
+
+
+def test_cboe_without_the_index_options_says_so():
+    import pytest
+
+    with pytest.raises(ValueError, match="no \^NDX options"):
+        md.cboe_chain("^NDX", get_json=lambda symbol: {"data": {"options": []}})
+
+
+def test_parity_yield_copes_with_two_roots_at_one_strike():
+    rows = []
+    for root_shift in (0.0, 0.1):                              # SPX (AM) and SPXW (PM) at the same strikes
+        for k in (98.0, 100.0, 102.0):
+            rows.append({"OptionType": "Call", "ExpiryDate": "2026-12-18", "strike": k, "bid": 3.0 + root_shift,
+                         "ask": 3.2 + root_shift})
+            rows.append({"OptionType": "Put", "ExpiryDate": "2026-12-18", "strike": k, "bid": 2.0 + root_shift,
+                         "ask": 2.2 + root_shift})
+    q = md.parity_dividend_yield(pd.DataFrame(rows), 100.0, 0.04, "2026-11-18T15:00:00+00:00")
+    assert np.isfinite(q)

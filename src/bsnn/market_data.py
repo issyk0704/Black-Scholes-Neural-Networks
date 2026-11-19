@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -235,8 +236,9 @@ def parity_dividend_yield(chain: pd.DataFrame, spot: float, rate: float, snapsho
     """
     quoted = chain[(chain["bid"] > 0) & (chain["ask"] > 0)]
     mids = quoted.assign(mid=(quoted["bid"] + quoted["ask"]) / 2)
-    calls = mids[mids["OptionType"] == "Call"].set_index(["ExpiryDate", "strike"])["mid"]
-    puts = mids[mids["OptionType"] == "Put"].set_index(["ExpiryDate", "strike"])["mid"]
+    # The third Friday lists both the AM-settled monthly (SPX) and the PM weekly (SPXW) at the same strikes: one mid each.
+    calls = mids[mids["OptionType"] == "Call"].groupby(["ExpiryDate", "strike"])["mid"].mean()
+    puts = mids[mids["OptionType"] == "Put"].groupby(["ExpiryDate", "strike"])["mid"].mean()
     pairs = pd.concat({"call": calls, "put": puts}, axis=1, join="inner").reset_index()
     if pairs.empty:
         return 0.0
@@ -359,6 +361,45 @@ def snapshot_problem(chain: pd.DataFrame) -> str | None:
     return None
 
 
+# Yahoo's cash-index chains are missing most of their open interest (19 Nov 2026: SPXW dailies showed 0, the SPX
+# monthly about 4,800 contracts against millions), so the index's share of the levels was nearly empty. Cboe's own
+# delayed quotes (about 15 minutes late, cboe.com's public pages) carry the whole chain with its open interest in
+# one request, under the same contract symbols (so refresh_open_interest still matches them).
+CBOE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{}.json"
+CBOE_INDEX = {"^SPX": ("_SPX", ("SPX", "SPXW")), "^NDX": ("_NDX", ("NDX", "NDXP"))}
+_OCC = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
+
+
+def _cboe_json(symbol: str) -> dict:
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(CBOE_URL.format(symbol), headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read())
+
+
+def cboe_chain(ticker: str, get_json: Callable[[str], dict] = _cboe_json) -> pd.DataFrame:
+    """An index's whole chain from Cboe, in Yahoo's columns (calls and puts, ExpiryDate, OptionType)."""
+    symbol, roots = CBOE_INDEX[ticker]
+    rows = []
+    for o in get_json(symbol)["data"]["options"]:
+        m = _OCC.match(o.get("option", ""))
+        if not m or m.group(1) not in roots:
+            continue
+        ymd = m.group(2)
+        rows.append({"contractSymbol": o["option"], "strike": int(m.group(4)) / 1000,
+                     "lastPrice": float(o.get("last_trade_price") or 0.0), "bid": float(o.get("bid") or 0.0),
+                     "ask": float(o.get("ask") or 0.0), "volume": float(o.get("volume") or 0.0),
+                     "openInterest": float(o.get("open_interest") or 0.0),
+                     "impliedVolatility": float(o.get("iv") or 0.0),
+                     "OptionType": "Call" if m.group(3) == "C" else "Put",
+                     "ExpiryDate": f"20{ymd[:2]}-{ymd[2:4]}-{ymd[4:]}"})
+    if not rows:
+        raise ValueError(f"Cboe has no {ticker} options")
+    return pd.DataFrame(rows).sort_values(["ExpiryDate", "OptionType", "strike"], ignore_index=True)
+
+
 def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = True,
                        progress: Callable[[str], None] | None = None,
                        max_expiries: int | None = None) -> pd.DataFrame:
@@ -368,17 +409,28 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     can't end up in a training set.
     """
     tk = yf.Ticker(ticker)
-    expiries = list(tk.options)[:max_expiries]
-    if not expiries:
-        raise ValueError(f"No listed options found for {ticker!r}")
     snapshot_time = pd.Timestamp.now(tz="UTC")
     frames = []
-    for i, expiry in enumerate(expiries, 1):
-        if progress:
-            progress(f"{ticker.upper()}: expiry {expiry} ({i}/{len(expiries)})")
-        chain = tk.option_chain(expiry)
-        frames.append(chain.calls.assign(OptionType="Call", ExpiryDate=expiry))
-        frames.append(chain.puts.assign(OptionType="Put", ExpiryDate=expiry))
+    if ticker.upper() in CBOE_INDEX:
+        try:
+            whole = cboe_chain(ticker.upper())
+            keep = sorted(whole["ExpiryDate"].unique())[:max_expiries]
+            frames = [whole[whole["ExpiryDate"].isin(keep)]]
+            if progress:
+                progress(f"{ticker.upper()}: {len(keep)} expiries from Cboe")
+        except Exception:
+            log.warning("Cboe's %s chain unavailable; using Yahoo's", ticker, exc_info=True)
+            frames = []
+    if not frames:
+        expiries = list(tk.options)[:max_expiries]
+        if not expiries:
+            raise ValueError(f"No listed options found for {ticker!r}")
+        for i, expiry in enumerate(expiries, 1):
+            if progress:
+                progress(f"{ticker.upper()}: expiry {expiry} ({i}/{len(expiries)})")
+            chain = tk.option_chain(expiry)
+            frames.append(chain.calls.assign(OptionType="Call", ExpiryDate=expiry))
+            frames.append(chain.puts.assign(OptionType="Put", ExpiryDate=expiry))
     history = clean_history(tk.history(period="1y", auto_adjust=False))
     chain = enrich_snapshot(pd.concat(frames, ignore_index=True), ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())
