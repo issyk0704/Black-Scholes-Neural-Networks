@@ -175,26 +175,36 @@ def test_committed_snapshots_are_loadable():
     assert np.isfinite(df["underlyingPrice"]).all()
 
 
-def test_index_chains_come_from_cboe_in_yahoos_columns():
-    payload = {"data": {"options": [
-        {"option": "SPXW261120C07400000", "bid": 10.0, "ask": 11.0, "last_trade_price": 10.5, "volume": 50,
-         "open_interest": 1200, "iv": 0.18},
-        {"option": "SPX261120P07300000", "bid": 8.0, "ask": 9.0, "volume": 5, "open_interest": 3400, "iv": 0.2},
-        {"option": "2SPX261120C07400000", "bid": 1.0, "ask": 2.0, "open_interest": 9},     # adjusted: dropped
-    ]}}
-    chain = md.cboe_chain("^SPX", get_json=lambda symbol: payload)
-    assert list(chain["contractSymbol"]) == ["SPXW261120C07400000", "SPX261120P07300000"]
-    call = chain.iloc[0]
-    assert call["strike"] == 7400.0 and call["ExpiryDate"] == "2026-11-20" and call["OptionType"] == "Call"
-    assert call["openInterest"] == 1200.0 and call["bid"] == 10.0
-    assert chain.iloc[1]["OptionType"] == "Put" and chain.iloc[1]["lastPrice"] == 0.0
+OCC_TEXT = """Series Search Results for SPX
+
+\t\tSeries/contract\t\tStrike\t\t\tOpen Interest\t\t\t
+ProductSymbol\tyear\tMonth\tDay\tInteger\tDec\tC/P\tCall\tPut\tPosition Limit\t
+SPXW  \t\t2026\t11\t20\t7400\t000\tC P \t1200\t50\t0
+SPX  \t\t2026\t11\t20\t7300\t000\tC P \t10\t3400\t0
+2SPX  \t\t2026\t11\t20\t7400\t000\t  P \t0\t9\t0
+"""
 
 
-def test_cboe_without_the_index_options_says_so():
-    import pytest
+def test_the_occ_report_reads_into_open_interest_per_contract():
+    oi = md.occ_open_interest("^SPX", get_text=lambda symbol: OCC_TEXT)
+    assert oi[("SPXW", "2026-11-20", "Call", 7400.0)] == 1200.0
+    assert oi[("SPX", "2026-11-20", "Put", 7300.0)] == 3400.0
+    assert not any(k[0] == "2SPX" for k in oi)                                   # adjusted contracts left out
 
-    with pytest.raises(ValueError, match="no \^NDX options"):
-        md.cboe_chain("^NDX", get_json=lambda symbol: {"data": {"options": []}})
+
+def test_an_occ_report_without_the_index_options_says_so():
+    with pytest.raises(ValueError, match=r"no \^NDX options"):
+        md.occ_open_interest("^NDX", get_text=lambda symbol: "Series Search Results for NDX\n")
+
+
+def test_yahoos_index_chain_takes_the_occs_open_interest():
+    yahoo = pd.DataFrame({"contractSymbol": ["SPXW261120C07400000", "SPX261120P07300000", "SPXW261120P07000000"],
+                          "strike": [7400.0, 7300.0, 7000.0], "OptionType": ["Call", "Put", "Put"],
+                          "ExpiryDate": "2026-11-20", "openInterest": [0.0, 4.0, 7.0], "bid": [10.0, 8.0, 1.0]})
+    oi = md.occ_open_interest("^SPX", get_text=lambda symbol: OCC_TEXT)
+    filled, n = md.fill_open_interest(yahoo, oi)
+    assert n == 2 and list(filled["openInterest"]) == [1200.0, 3400.0, 7.0]       # unmatched keeps Yahoo's
+    assert list(filled["bid"]) == [10.0, 8.0, 1.0]                                  # prices untouched
 
 
 def test_parity_yield_copes_with_two_roots_at_one_strike():
