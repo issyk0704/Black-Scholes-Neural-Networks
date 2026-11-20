@@ -217,3 +217,15 @@ def test_parity_yield_copes_with_two_roots_at_one_strike():
                          "ask": 2.2 + root_shift})
     q = md.parity_dividend_yield(pd.DataFrame(rows), 100.0, 0.04, "2026-11-18T15:00:00+00:00")
     assert np.isfinite(q)
+
+
+def test_the_morning_settled_monthlies_leave_the_chain_at_the_open_on_their_expiry_day():
+    chain = pd.DataFrame({
+        "contractSymbol": ["SPX261120C07000000", "SPXW261120C07000000", "SPX261218C07000000", "SPX261120P06900000"],
+        "ExpiryDate": ["2026-11-20", "2026-11-20", "2026-12-18", "2026-11-20"],
+        "OptionType": ["Call", "Call", "Call", "Put"], "strike": [7000.0, 7000.0, 7000.0, 6900.0]})
+    before = md.drop_settled_at_open(chain, pd.Timestamp("2026-11-20 14:29", tz="UTC"))     # 09:29 NY
+    after = md.drop_settled_at_open(chain, pd.Timestamp("2026-11-20 14:30", tz="UTC"))      # 09:30 NY
+    day_before = md.drop_settled_at_open(chain, pd.Timestamp("2026-11-19 20:00", tz="UTC"))
+    assert len(before) == 4 and len(day_before) == 4
+    assert list(after["contractSymbol"]) == ["SPXW261120C07000000", "SPX261218C07000000"]   # SPXW and December stay

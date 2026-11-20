@@ -370,6 +370,8 @@ def snapshot_problem(chain: pd.DataFrame) -> str | None:
 OCC_URL = "https://marketdata.theocc.com/series-search?symbolType=U&symbol={}"
 OCC_INDEX = {"^SPX": ("SPX", ("SPX", "SPXW")), "^NDX": ("NDX", ("NDX", "NDXP"))}
 _OCC = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
+AM_SETTLED = {"SPX", "NDX"}   # the monthly roots settle on the expiry day's opening prints (SPXW / NDXP at the close)
+OPEN_NY = dt.time(9, 30)
 _OCC_LINE = re.compile(r"^\s*([A-Z0-9]+)\s+(\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d+)\s+(\d{3})\s+(?:C\s+P|C|P)?\s*"
                        r"(\d+)\s+(\d+)\s+(\d+)\s*$")
 
@@ -397,6 +399,17 @@ def occ_open_interest(ticker: str, get_text: Callable[[str], str] = _occ_text) -
     if not out:
         raise ValueError(f"the OCC report had no {ticker} options")
     return out
+
+
+def drop_settled_at_open(chain: pd.DataFrame, now) -> pd.DataFrame:
+    """``chain`` without the morning-settled monthlies (SPX / NDX root) expiring on ``now``'s day once the 09:30 New
+    York open has settled them: they stopped trading the day before and carry no gamma after the opening prints."""
+    at = pd.Timestamp(now).tz_convert(MARKET_TZ)
+    if at.time() < OPEN_NY or chain.empty:
+        return chain
+    roots = chain["contractSymbol"].astype(str).str.extract(_OCC)[0]
+    gone = roots.isin(AM_SETTLED) & (chain["ExpiryDate"].astype(str) == at.date().isoformat())
+    return chain[~gone].reset_index(drop=True)
 
 
 def fill_open_interest(chain: pd.DataFrame, oi: dict) -> tuple[pd.DataFrame, int]:
@@ -435,6 +448,7 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
         frames.append(chain.puts.assign(OptionType="Put", ExpiryDate=expiry))
     whole = pd.concat(frames, ignore_index=True)
     if ticker.upper() in OCC_INDEX:
+        whole = drop_settled_at_open(whole, snapshot_time)
         try:
             whole, filled = fill_open_interest(whole, occ_open_interest(ticker.upper()))
             if progress:
