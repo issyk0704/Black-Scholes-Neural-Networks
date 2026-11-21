@@ -229,3 +229,41 @@ def test_the_morning_settled_monthlies_leave_the_chain_at_the_open_on_their_expi
     day_before = md.drop_settled_at_open(chain, pd.Timestamp("2026-11-19 20:00", tz="UTC"))
     assert len(before) == 4 and len(day_before) == 4
     assert list(after["contractSymbol"]) == ["SPXW261120C07000000", "SPX261218C07000000"]   # SPXW and December stay
+
+
+NY = "America/New_York"
+
+
+@pytest.mark.parametrize("now, due", [
+    ("2026-11-20 15:00", "2026-11-19"),      # Friday afternoon: Thursday evening's file
+    ("2026-11-20 21:30", "2026-11-20"),      # after Friday's build
+    ("2026-11-22 12:00", "2026-11-20"),      # the weekend: Friday's
+    ("2026-11-23 09:15", "2026-11-20"),      # Monday's 09:15 card: Friday's
+    ("2026-11-27 09:15", "2026-11-25"),      # the day after Thanksgiving: Wednesday's (no file for the holiday)
+])
+def test_the_occ_file_due_is_the_last_trading_day_built(now, due):
+    assert md.occ_due(pd.Timestamp(now, tz=NY)) == pd.Timestamp(due).date()
+
+
+def test_the_occ_file_day_is_its_earliest_expiry():
+    oi = md.occ_open_interest("^SPX", get_text=lambda symbol: OCC_TEXT)
+    assert md.occ_file_day(oi) == pd.Timestamp("2026-11-20").date()
+
+
+def occ_chain(day: str, read: str) -> pd.DataFrame:
+    return pd.DataFrame({"ticker": ["^NDX", "^NDX"], md.OCC_DAY: day, md.OCC_READ: pd.Timestamp(read, tz=NY).isoformat()})
+
+
+def test_the_card_note_flags_a_stale_or_missing_occ_file_only():
+    assert md.occ_note(occ_chain("2026-11-20", "2026-11-23 09:15")) is None            # Friday's file on Monday
+    stale = md.occ_note(occ_chain("2026-11-19", "2026-11-23 09:15"))                   # Thursday's on Monday
+    assert stale == "NDX open interest may be a day old (the OCC's latest file was for Thu 19 Nov)"
+    assert "OCC was unavailable" in md.occ_note(occ_chain("", "2026-11-23 09:15"))
+    assert md.occ_note(pd.DataFrame({"ticker": ["QQQ"]})) is None                        # an ETF / an old snapshot
+
+
+def test_the_occ_columns_survive_a_saved_snapshot(tmp_path):
+    for day, expect in (("2026-11-19", "a day old"), ("", "unavailable")):
+        path = tmp_path / f"x{len(day)}.csv.gz"
+        occ_chain(day, "2026-11-23 09:15").to_csv(path, index=False)
+        assert expect in md.occ_note(pd.read_csv(path))
