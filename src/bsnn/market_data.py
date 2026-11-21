@@ -401,6 +401,58 @@ def occ_open_interest(ticker: str, get_text: Callable[[str], str] = _occ_text) -
     return out
 
 
+# Staleness guard. The OCC builds each trading day's file about 19:00 Chicago (20:00 New York) with that day's closing
+# open interest, and the file still lists the series that expired that day; SPXW / NDXP expire every trading day, so
+# a file's earliest expiry is the day it was built for. Each index chain records that day and when the file was read,
+# and the card says so when the file is older than it should be at the read (or the OCC couldn't be read at all).
+OCC_BUILT = dt.time(21, 0)    # 20:00 New York plus an hour's margin
+OCC_DAY, OCC_READ = "occDay", "occRead"   # columns: the OCC file's trading day ("" = OCC unavailable), when read
+
+
+def business_day(day: dt.date) -> bool:
+    """An NYSE trading day (weekdays only when the ``holidays`` package isn't installed: the guard never fails)."""
+    if day.weekday() >= 5:
+        return False
+    try:
+        import holidays
+
+        return day not in holidays.financial_holidays("NYSE", years=day.year)
+    except Exception:
+        return True
+
+
+def occ_due(now) -> dt.date:
+    """The trading day the OCC's latest file should be for at ``now``: the last trading day whose evening build
+    (:data:`OCC_BUILT` New York) has passed."""
+    at = pd.Timestamp(now)
+    at = (at.tz_localize("UTC") if at.tzinfo is None else at).tz_convert(MARKET_TZ)
+    day = at.date() if at.time() >= OCC_BUILT else at.date() - dt.timedelta(days=1)
+    while not business_day(day):
+        day -= dt.timedelta(days=1)
+    return day
+
+
+def occ_file_day(oi: dict) -> dt.date:
+    """The trading day an OCC report was built for: its earliest expiry (see :data:`OCC_BUILT`)."""
+    return min(dt.date.fromisoformat(key[1]) for key in oi)
+
+
+def occ_note(chain: pd.DataFrame) -> str | None:
+    """A line for the card when an index chain's open interest isn't the latest there was at the read: the OCC's file
+    older than :func:`occ_due`, or the OCC unavailable (then Yahoo's index open interest, most of it missing). None for
+    a fresh file, an ETF's chain, or a snapshot saved before this was recorded."""
+    if chain.empty or OCC_DAY not in chain or OCC_READ not in chain:
+        return None
+    name = str(chain["ticker"].iloc[0]).lstrip("^")
+    day = chain[OCC_DAY].iloc[0]
+    if not isinstance(day, str) or not day:             # "" comes back from a saved CSV as NaN
+        return f"{name} open interest: the OCC was unavailable, so Yahoo's (most of it missing)"
+    built = dt.date.fromisoformat(day)
+    if built < occ_due(chain[OCC_READ].iloc[0]):
+        return f"{name} open interest may be a day old (the OCC's latest file was for {built:%a %d %b})"
+    return None
+
+
 def drop_settled_at_open(chain: pd.DataFrame, now) -> pd.DataFrame:
     """``chain`` without the morning-settled monthlies (SPX / NDX root) expiring on ``now``'s day once the 09:30 New
     York open has settled them: they stopped trading the day before and carry no gamma after the opening prints."""
@@ -450,11 +502,15 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
     if ticker.upper() in OCC_INDEX:
         whole = drop_settled_at_open(whole, snapshot_time)
         try:
-            whole, filled = fill_open_interest(whole, occ_open_interest(ticker.upper()))
+            oi = occ_open_interest(ticker.upper())
+            whole, filled = fill_open_interest(whole, oi)
+            whole[OCC_DAY] = occ_file_day(oi).isoformat()
             if progress:
                 progress(f"{ticker.upper()}: open interest for {filled:,} contracts from the OCC")
         except Exception:
+            whole[OCC_DAY] = ""
             log.warning("The OCC's %s open interest unavailable; keeping Yahoo's", ticker, exc_info=True)
+        whole[OCC_READ] = snapshot_time.isoformat()
     history = clean_history(tk.history(period="1y", auto_adjust=False))
     chain = enrich_snapshot(whole, ticker, snapshot_time,
                             spot=_live_price(tk, history), history=history, rate=risk_free_rate())

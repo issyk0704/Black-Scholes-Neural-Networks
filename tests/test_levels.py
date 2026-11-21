@@ -684,3 +684,20 @@ def test_copy_message_holds_one_line_per_market_and_the_card_none():
     assert [ln.split()[0] for ln in block] == ["NQ", "ES", "YM"] and fits_discord(copy)
     assert "```" not in levels_cli.build_message(levels, prices, pd.Timestamp("2026-10-06").date(), as_of=as_of)["content"]
     assert levels_cli.copy_message([sample_levels(ratio=np.nan)], prices, as_of) is None
+
+
+def test_refreshed_open_interest_carries_whose_occ_file_it_is():
+    saved = make_chain(ticker="^NDX", snapshot=WEDNESDAY, expiries=("2026-10-16",))
+    saved[market_data.OCC_DAY], saved[market_data.OCC_READ] = "2026-10-06", "2026-10-07T13:15:00+00:00"
+    morning = make_chain(ticker="^NDX", snapshot=THURSDAY_MORNING, expiries=("2026-10-16",))
+    morning["openInterest"] = np.arange(len(morning), dtype=float)
+    morning[market_data.OCC_DAY], morning[market_data.OCC_READ] = "2026-10-07", "2026-10-08T13:15:00+00:00"
+    raw, _ = lv.refresh_open_interest(saved, morning)
+    assert set(raw[market_data.OCC_DAY]) == {"2026-10-07"} and set(raw[market_data.OCC_READ]) == {"2026-10-08T13:15:00+00:00"}
+
+
+def test_card_warns_when_index_open_interest_is_not_the_latest():
+    note = "NDX open interest may be a day old (the OCC's latest file was for Thu 19 Nov)"
+    card = levels_cli.market_embed(sample_levels(oi_notes=(note,)), None)
+    assert card["description"].endswith("New York.\n⚠️ " + note + ".")
+    assert "⚠️" not in levels_cli.market_embed(sample_levels(), None)["description"]

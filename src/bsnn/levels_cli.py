@@ -264,6 +264,8 @@ def market_embed(levels: MarketLevels, live_price: float | None) -> dict:
     if levels.open_interest_time is not None:
         description += f", open interest from {levels.open_interest_time:%a %H:%M}"
     description += "."
+    for note in levels.oi_notes:                         # the OCC's file older than it should be, or unavailable
+        description += f"\n⚠️ {note[0].upper()}{note[1:]}."
     return {
         "title": f"{levels.symbol} options levels",
         "description": description,

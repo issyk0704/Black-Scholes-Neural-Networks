@@ -20,6 +20,7 @@ dependencies = [
     "tensorflow>=2.16",
     "yfinance>=0.2.40",
     "requests>=2.31",      # the OCC's open interest report (already installed with yfinance)
+    "holidays>=0.50",      # NYSE holidays for the OCC staleness guard (no false 'a day old' after a holiday)
 ]
 
 [project.optional-dependencies]

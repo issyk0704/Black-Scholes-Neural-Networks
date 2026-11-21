@@ -177,6 +177,7 @@ class MarketLevels:
     # Today's most-traded 0DTE strikes (source chain, its prices), busiest first; only from a live chain.
     busiest_calls: list[float] = field(default_factory=list)
     busiest_puts: list[float] = field(default_factory=list)
+    oi_notes: tuple[str, ...] = ()  # an index's open interest not the latest (market_data.occ_note), for the card
 
     def in_futures(self, level: float) -> float:
         return level * self.ratio
@@ -203,6 +204,9 @@ def refresh_open_interest(raw: pd.DataFrame, newer: pd.DataFrame) -> tuple[pd.Da
     if (fresh != kept["openInterest"].fillna(0.0)).mean() < MIN_OI_CHANGED:
         return raw, None
     kept["openInterest"] = fresh
+    for column in (market_data.OCC_DAY, market_data.OCC_READ):     # whose open interest it now is (see occ_note)
+        if column in newer:
+            kept[column] = newer[column].iloc[0]
     return kept, pd.Timestamp(newer["snapshotTime"].iloc[0]).tz_convert(market_data.MARKET_TZ)
 
 
@@ -261,7 +265,8 @@ def compute_levels(symbol: str, raw: pd.DataFrame, open_interest_time: pd.Timest
         open_interest_time=open_interest_time, session=session, horizons=horizons,
         sources=tuple(d["ticker"].iloc[0] for d in [own] + extra), measured_at=measured_at,
         own_horizons=compute_horizons(own, session, moves) if extra else horizons,
-        busiest_calls=calls, busiest_puts=puts)
+        busiest_calls=calls, busiest_puts=puts,
+        oi_notes=tuple(n for n in map(market_data.occ_note, [raw, *others]) if n))
 
 
 BUSIEST = 2  # strikes listed per side
