@@ -456,6 +456,17 @@ def business_day(day: dt.date) -> bool:
         return True
 
 
+EARLY_CLOSE = dt.time(13, 0)   # US stocks on a half day
+
+
+def early_close(day: dt.date) -> bool:
+    """A US half day (stocks close 13:00 New York): the day after Thanksgiving, Christmas Eve and 3 July, when they
+    are trading days."""
+    thanksgiving = dt.date(day.year, 11, 1) + dt.timedelta(days=(3 - dt.date(day.year, 11, 1).weekday()) % 7 + 21)
+    halves = {thanksgiving + dt.timedelta(days=1), dt.date(day.year, 12, 24), dt.date(day.year, 7, 3)}
+    return day in halves and business_day(day)
+
+
 def occ_due(now) -> dt.date:
     """The trading day the OCC's latest file should be for at ``now``: the last trading day whose evening build
     (:data:`OCC_BUILT` New York) has passed."""
