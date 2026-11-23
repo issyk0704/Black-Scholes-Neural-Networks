@@ -267,3 +267,36 @@ def test_the_occ_columns_survive_a_saved_snapshot(tmp_path):
         path = tmp_path / f"x{len(day)}.csv.gz"
         occ_chain(day, "2026-11-23 09:15").to_csv(path, index=False)
         assert expect in md.occ_note(pd.read_csv(path))
+
+
+def _bars(qqq, nq, start="2026-11-20 15:45"):
+    index = pd.date_range(start, periods=len(qqq), freq="1min", tz="America/New_York")
+    return pd.concat({"Close": pd.DataFrame({"QQQ": qqq, "NQZ26.CME": nq}, index=index)}, axis=1)
+
+
+def test_the_ratio_is_from_minutes_both_traded_not_two_latest_prices():
+    """Fri 20 Nov 2026 16:30: QQQ stopped at 16:00 while NQ traded on; the latest prices gave 41.478 (the Monday card's
+    NQ walls about 150-180 points high). Shared minutes only, the futures' later bars ignored."""
+    qqq = [608.0] * 15 + [np.nan] * 30
+    nq = [25_120.0] * 15 + [25_237.0] * 30
+    ratio = md.aligned_ratio("QQQ", "NQZ26.CME", download=lambda *a, **k: _bars(qqq, nq))
+    assert ratio == pytest.approx(25_120.0 / 608.0)
+
+
+def test_the_futures_bar_still_forming_is_left_out_and_one_odd_minute_does_not_move_it():
+    """Mon 23 Nov 2026 10:03: Yahoo's newest NQ bar said 26,588.75 while forming (it closed at 26,645)."""
+    qqq = [646.0] * 16
+    nq = [26_600.0] * 15 + [26_400.0]                          # the forming bar
+    qqq_odd = list(qqq)
+    qqq_odd[5] = 640.0                                          # one thin print
+    ratio = md.aligned_ratio("QQQ", "NQZ26.CME", download=lambda *a, **k: _bars(qqq_odd, nq))
+    assert ratio == pytest.approx(26_600.0 / 646.0)
+
+
+def test_matching_futures_price_is_spot_times_the_aligned_ratio(monkeypatch):
+    monkeypatch.setattr(md, "latest_price", lambda t: 99_999.0)
+    bars = _bars([650.0] * 6, [26_780.0] * 6)
+    got = md.matching_futures_price("QQQ", "NQZ26.CME", 650.0, download=lambda *a, **k: bars)
+    assert got == pytest.approx(26_780.0)
+    none = _bars([np.nan] * 3, [26_780.0] * 3)
+    assert md.matching_futures_price("QQQ", "NQZ26.CME", 650.0, download=lambda *a, **k: none) == 99_999.0

@@ -305,6 +305,41 @@ def latest_price(ticker: str) -> float:
     return _live_price(tk, clean_history(tk.history(period="5d", auto_adjust=False)))
 
 
+RATIO_MINUTES = 15
+
+
+def aligned_ratio(underlying: str, futures: str, download=None) -> float:
+    """Futures points per underlying point from the minutes both traded: the median of the last ``RATIO_MINUTES``
+    shared 1-minute closes, the futures' newest bar left out (Yahoo hands it over while it is still forming). NaN
+    when they share no minute.
+
+    Two latest prices mix different moments: Yahoo's futures run about ten minutes behind the ETF in the session, and
+    after the 16:00 close the ETF stops while the futures go on. Fri 20 Nov 2026 16:30: QQQ's 16:00 close 608.45 and
+    NQ's 16:30 price gave 41.478 against about 41.2-41.3 from shared minutes, so the Monday 09:15 card's NQ walls sat
+    about 150-180 points high. The basis itself barely moves in a day."""
+    download = download or yf.download
+    bars = download([underlying, futures], period="5d", interval="1m", progress=False, auto_adjust=False)
+    closes = bars["Close"][[underlying, futures]]
+    newest = closes[futures].dropna().index.max() if closes[futures].notna().any() else None
+    both = closes.dropna()
+    if len(both) > 1 and both.index[-1] == newest:
+        both = both.iloc[:-1]
+    if both.empty:
+        return float("nan")
+    tail = both.tail(RATIO_MINUTES)
+    return float((tail[futures] / tail[underlying]).median())
+
+
+def matching_futures_price(underlying: str, futures: str, spot: float, download=None) -> float:
+    """The futures price at the same moment as ``spot``: spot x :func:`aligned_ratio`; Yahoo's latest futures price
+    (a different moment, logged) only when the two share no minute."""
+    ratio = aligned_ratio(underlying, futures, download)
+    if np.isfinite(ratio) and ratio > 0:
+        return float(spot * ratio)
+    log.warning("No minute shared by %s and %s; using the futures' latest price", underlying, futures)
+    return latest_price(futures)
+
+
 def _live_price(tk, history: pd.DataFrame) -> float:
     try:
         price = float(tk.fast_info["lastPrice"])
@@ -512,17 +547,17 @@ def fetch_option_chain(ticker: str, directory: Path | None = None, save: bool = 
             log.warning("The OCC's %s open interest unavailable; keeping Yahoo's", ticker, exc_info=True)
         whole[OCC_READ] = snapshot_time.isoformat()
     history = clean_history(tk.history(period="1y", auto_adjust=False))
-    chain = enrich_snapshot(whole, ticker, snapshot_time,
-                            spot=_live_price(tk, history), history=history, rate=risk_free_rate())
+    spot = _live_price(tk, history)
+    chain = enrich_snapshot(whole, ticker, snapshot_time, spot=spot, history=history, rate=risk_free_rate())
     futures = instruments.futures_for(ticker)
     if futures is not None:
-        # Taken straight after the spot price, so levels convert to futures at a matching ratio,
-        # from the contract we trade (see contracts.py), recorded so a later switch can be allowed for.
+        # The futures price that matches the spot (spot x the ratio from minutes both traded), from the contract we
+        # trade (see contracts.py), recorded so a later switch can be allowed for.
         from bsnn import contracts
 
         contract = contracts.futures_ticker(futures.symbol, snapshot_time)
         try:
-            chain["futuresPrice"] = latest_price(contract)
+            chain["futuresPrice"] = matching_futures_price(ticker, contract, spot)
             chain["futuresTicker"] = contract
         except Exception:
             log.warning("Couldn't fetch %s alongside %s", contract, ticker, exc_info=True)
