@@ -622,6 +622,21 @@ def test_update_slots(tmp_path, when, posted, expected):
     assert (slot.name if slot else None) == expected
 
 
+@pytest.mark.parametrize("when, expected, why", [
+    ("2026-11-26 14:15", None, "market holiday"),            # Thanksgiving 09:15 New York: no card from Wednesday's data
+    ("2026-11-26 15:45", None, "market holiday"),            # nor its 10:45 update
+    ("2026-11-27 14:15", "daily", ""),                       # the half day: the 09:15 card
+    ("2026-11-27 17:45", "update-12:45", ""),                # 12:45 is before the 13:00 close
+    ("2026-11-27 19:45", None, "half day"),                  # 14:45: stocks closed at 13:00
+    ("2026-12-24 19:45", None, "half day"),                  # Christmas Eve too
+])
+def test_no_card_on_a_us_holiday_and_none_after_a_half_days_close(tmp_path, when, expected, why):
+    marker = tmp_path / "levels_posted.txt"
+    marker.write_text("")
+    slot, reason = levels_cli.due_slot(pd.Timestamp(when, tz="UTC"), ALL_SLOTS, marker)
+    assert (slot.name if slot else None) == expected and why in reason
+
+
 def test_slots_never_overlap():
     slots = sorted(ALL_SLOTS, key=lambda s: s.start)
     assert all(a.end <= b.start for a, b in zip(slots, slots[1:]))

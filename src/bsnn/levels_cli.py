@@ -106,7 +106,11 @@ def due_slot(now: pd.Timestamp, slots: tuple[Slot, ...], marker: Path) -> tuple[
     ny = now.tz_convert(market_data.MARKET_TZ)
     if ny.weekday() >= 5:
         return None, "it's the weekend"
+    if not market_data.business_day(ny.date()):             # Thanksgiving: Wednesday's levels would be posted as today's
+        return None, "US stocks are closed today (a market holiday)"
     current = [s for s in slots if s.start <= ny.time() < s.end]
+    if current and market_data.early_close(ny.date()) and current[0].start >= market_data.EARLY_CLOSE:
+        return None, "a half day: US stocks closed at 13:00 New York"
     if not current:
         return None, f"it's {ny:%H:%M} in New York, outside every posting slot"
     if current[0].name in posted_today(marker, ny.date()):
