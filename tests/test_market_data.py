@@ -125,6 +125,7 @@ def test_snapshots_in_subfolders_are_found_once(tmp_path, chain):
     ("2026-10-06T00:29:00+00:00", False),   # Monday 20:29 New York: SPX's overnight session is about to start
     ("2026-10-06T10:33:00+00:00", False),   # Tuesday 06:33 New York, before the open
     ("2026-10-10T15:00:00+00:00", False),   # Saturday
+    ("2026-11-26T21:30:00+00:00", False),   # Thanksgiving: the quotes are Wednesday's
 ])
 def test_snapshot_problem_checks_trading_hours(chain, snapshot, ok):
     assert (md.snapshot_problem(chain.assign(snapshotTime=snapshot)) is None) is ok

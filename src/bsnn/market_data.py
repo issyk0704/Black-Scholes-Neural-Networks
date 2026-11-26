@@ -372,22 +372,25 @@ def us_session_open(now: pd.Timestamp | None = None) -> bool:
 
 
 def quotes_reliable(now: pd.Timestamp | None = None) -> bool:
-    """True on a weekday between 09:45 and 20:00 New York time: in the session, or after
-    the close while quotes hold their closing values."""
+    """True on an NYSE trading day between 09:45 and 20:00 New York time: in the session, or after
+    the close while quotes hold their closing values. Never on a US stock holiday: on Thanksgiving
+    2026 the 16:30 collection would have saved Wednesday's quotes as Thursday's (training data)."""
     now = _new_york(now)
-    return now.weekday() < 5 and SESSION_START <= now.time() <= QUOTES_RELIABLE_UNTIL
+    return business_day(now.date()) and SESSION_START <= now.time() <= QUOTES_RELIABLE_UNTIL
 
 
 def snapshot_problem(chain: pd.DataFrame) -> str | None:
     """Why a chain shouldn't be saved for training, or None if it's fine.
 
-    It must be taken on a weekday between 09:45 and 20:00 New York time (SPX
-    options also quote overnight, but those quotes are wide and thin) and most
-    contracts must have a live quote.
+    It must be taken on an NYSE trading day between 09:45 and 20:00 New York time
+    (SPX options also quote overnight, but those quotes are wide and thin; on a US
+    stock holiday they are the day before's) and most contracts must have a live quote.
     """
     if chain.empty:
         return "the chain is empty"
     taken = _new_york(pd.Timestamp(chain["snapshotTime"].iloc[0]))
+    if taken.weekday() < 5 and not business_day(taken.date()):
+        return "it was taken on a US stock holiday (the quotes are the day before's)"
     if taken.weekday() >= 5 or not SESSION_START <= taken.time() <= QUOTES_RELIABLE_UNTIL:
         return "it was taken outside US trading hours (09:45-20:00 New York)"
     share = live_quote_share(chain)

@@ -21,6 +21,8 @@ def test_us_session_open(when, expected):
     ("2026-10-06 13:30", False),  # 09:30: too close to the open
     ("2026-10-07 00:30", False),  # 20:30: SPX's overnight session has started
     ("2026-10-10 20:30", False),  # Saturday
+    ("2026-11-26 21:30", False),  # Thanksgiving 16:30: Wednesday's quotes, not Thursday's
+    ("2026-11-27 21:30", True),   # the half day after: its closing quotes are real
 ])
 def test_quotes_reliable(when, expected):
     assert market_data.quotes_reliable(pd.Timestamp(when, tz="UTC")) is expected
